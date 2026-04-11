@@ -115,20 +115,17 @@ class LogWindow(tk.Toplevel):
 
         self.btn_frame = tk.Frame(self, bg=COLOR_BG, pady=20)
         self.btn_frame.pack(fill="x")
-        
         btn_cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 25, "pady": 8, "cursor": "hand2"}
         
-        # New Cancel Button
         self.cancel_btn = tk.Button(self.btn_frame, text="CANCEL REMAINING", command=self.request_cancel, bg=COLOR_DANGER, **btn_cfg)
         self.cancel_btn.pack(side="left", padx=(180, 10))
-        
         self.close_btn = tk.Button(self.btn_frame, text="CLOSE WINDOW", command=self.destroy, state="disabled", bg="#cccccc", **btn_cfg)
         self.close_btn.pack(side="left", padx=10)
 
     def log(self, msg): self.text_area.insert(tk.END, msg); self.text_area.see(tk.END)
 
     def request_cancel(self):
-        if messagebox.askyesno("Confirm Cancel", "Are you sure you want to stop the current process and cancel remaining uninstalls?"):
+        if messagebox.askyesno("Confirm Cancel", "Stop current process and cancel remaining uninstalls?"):
             self.cancel_callback()
             self.log("\n🛑 PROCESS TERMINATED BY USER\n")
             self.cancel_btn.config(state="disabled", bg="#cccccc")
@@ -182,7 +179,7 @@ class LinuxSweep:
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True); self.scrollbar.pack(side="right", fill="y")
         
-        # Mousewheel Scroll Support
+        # Mousewheel Scroll Support with Territory Fix
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
         self.canvas.bind_all("<Button-4>", self._on_mousewheel)
         self.canvas.bind_all("<Button-5>", self._on_mousewheel)
@@ -193,8 +190,10 @@ class LinuxSweep:
         tk.Button(footer, text="UNINSTALL SELECTED", bg=COLOR_DANGER, command=self.show_confirm, **btn_cfg).pack(side="right")
 
     def _on_mousewheel(self, event):
-        if event.num == 4 or event.delta > 0: self.canvas.yview_scroll(-1, "units")
-        elif event.num == 5 or event.delta < 0: self.canvas.yview_scroll(1, "units")
+        """Modified to only scroll if the mouse is inside the main canvas territory"""
+        if str(event.widget).startswith(str(self.canvas)):
+            if event.num == 4 or event.delta > 0: self.canvas.yview_scroll(-1, "units")
+            elif event.num == 5 or event.delta < 0: self.canvas.yview_scroll(1, "units")
 
     def find_icon(self, name):
         if not name: return None
@@ -325,13 +324,10 @@ class LinuxSweep:
         messagebox.showinfo("Success", f"Imported {count} apps.")
 
     def abort_uninstall(self):
-        """Halts the uninstallation thread and kills current subprocess"""
         self.is_cancelled = True
         if self.current_proc:
-            try:
-                os.killpg(os.getpgid(self.current_proc.pid), signal.SIGTERM)
-            except:
-                self.current_proc.terminate()
+            try: os.killpg(os.getpgid(self.current_proc.pid), signal.SIGTERM)
+            except: self.current_proc.terminate()
 
     def check_queue(self):
         try:
@@ -352,7 +348,6 @@ class LinuxSweep:
         threading.Thread(target=self.worker_thread, args=(uids,), daemon=True).start()
 
     def worker_thread(self, uids):
-        """Surgical removal using native commands with orphan cleanup"""
         native, flatpak, snap = [], [], []
         for uid in uids:
             app = self.app_data_map[uid]
@@ -360,15 +355,13 @@ class LinuxSweep:
             elif app['pm'] == "SNAP": snap.append(app['id'])
             else: native.append(app['id'])
 
-        # Removal Logic with Cancellation Checks
         def run_proc(cmd):
             if self.is_cancelled: return
             self.current_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, preexec_fn=os.setsid)
             for l in self.current_proc.stdout:
                 if self.is_cancelled: break
                 self.log_queue.put(l)
-            self.current_proc.wait()
-            self.current_proc = None
+            self.current_proc.wait(); self.current_proc = None
 
         if native:
             cmd_map = {
@@ -379,15 +372,13 @@ class LinuxSweep:
             }
             run_proc(cmd_map.get(self.pm_type, ["echo", "Unknown PM"]) + native)
 
-        if flatpak and not self.is_cancelled:
-            run_proc(["flatpak", "uninstall", "-y"] + flatpak)
+        if flatpak and not self.is_cancelled: run_proc(["flatpak", "uninstall", "-y"] + flatpak)
 
         if snap and not self.is_cancelled:
             for s in snap:
                 if self.is_cancelled: break
                 self.log_queue.put(f"Surgically removing snap: {s}...\n")
                 run_proc(["snap", "remove", "--purge", s])
-
         self.log_queue.put("DONE")
 
 if __name__ == "__main__":
