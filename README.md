@@ -46,7 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/CodeWithAlamin/LinuxSweep/refs/head
     git clone https://github.com/CodeWithAlamin/LinuxSweep.git
     cd LinuxSweep
     chmod +x linux_sweep.sh
-    ./linux_sweep.sh
+    sudo ./linux_sweep.sh
     ```
 
 2.  **Make the script executable:**
