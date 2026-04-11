@@ -26,32 +26,44 @@ detect_pm() {
         echo "unknown"
     fi
 }
-
 PM_TYPE=$(detect_pm)
 
-# ----------- 3. THE PYTHON ENGINE -----------
+# ----------- 3. GRANULAR DEPENDENCY CHECK -----------
+ensure_pkg() {
+    local label=$1; local check_cmd=$2; local apt_pkg=$3; local dnf_pkg=$4; local pacman_pkg=$5; local zyp_pkg=$6
+    if ! eval "$check_cmd" &>/dev/null; then
+        echo "🛠️  $label is missing. Installing..."
+        case $PM_TYPE in
+            apt) apt update && apt install -y $apt_pkg ;;
+            dnf) dnf install -y $dnf_pkg ;;
+            pacman) pacman -Sy --noconfirm $pacman_pkg ;;
+            zypper) zypper install -y $zyp_pkg ;;
+        esac
+    else
+        echo "✅ $label is already installed."
+    fi
+}
+
+ensure_pkg "Python 3" "command -v python3" "python3" "python3" "python" "python3"
+ensure_pkg "Tkinter" "python3 -c 'import tkinter'" "python3-tk" "python3-tkinter" "tk" "python3-tk"
+ensure_pkg "Pillow" "python3 -c 'from PIL import Image, ImageTk'" \
+           "python3-pil python3-pil.imagetk" "python3-pillow python3-pillow-tk" \
+           "python-pillow" "python3-Pillow python3-Pillow-tk"
+
+# ----------- 4. THE PYTHON ENGINE -----------
 PY_FILE="/tmp/linux_sweep_engine.py"
 
 cat << 'EOF' > "$PY_FILE"
 import os, sys, json, subprocess, tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from PIL import Image, ImageTk
-import threading
-import queue
-import pwd
+import threading, queue, pwd
 
-PROTECTED = ["python3", "python", "python3-tk", "python3-pil", "pillow", "tkinter", "pkexec"]
-
-# Modern Color Palette
-COLOR_BG = "#ffffff"
-COLOR_HOVER = "#f8f9fa"
-COLOR_SELECTED = "#e7f3ff"
-COLOR_BORDER = "#cccccc" # Slightly darker for clarity
-COLOR_TEXT = "#333333"
-COLOR_IMPORT = "#4caf50" 
-COLOR_EXPORT = "#607d8b" 
-COLOR_DANGER = "#f44336" 
-COLOR_ACCENT = "#1976d2"
+# Core system protections
+PROTECTED = ["python3", "python", "pkexec", "tkinter", "niri", "snapd", "flatpak"]
+COLOR_BG, COLOR_HOVER, COLOR_SELECTED = "#ffffff", "#f8f9fa", "#e7f3ff"
+COLOR_BORDER, COLOR_TEXT, COLOR_ACCENT = "#e0e0e0", "#333333", "#1976d2"
+COLOR_IMPORT, COLOR_EXPORT, COLOR_DANGER = "#4caf50", "#607d8b", "#f44336"
 
 def get_user_home():
     try:
@@ -59,7 +71,6 @@ def get_user_home():
         if uid: return pwd.getpwuid(int(uid)).pw_dir
     except: pass
     return os.path.expanduser('~')
-
 USER_HOME = get_user_home()
 
 class CustomConfirm(tk.Toplevel):
@@ -104,7 +115,7 @@ class LogWindow(tk.Toplevel):
     def log(self, msg): self.text_area.insert(tk.END, msg); self.text_area.see(tk.END)
     def finalize(self):
         self.finished = True; self.progress.stop(); self.progress.config(mode='determinate', value=100)
-        self.label.config(text="✔ DONE: System Swept Clean", fg=COLOR_IMPORT)
+        self.label.config(text="✔ DONE: System Cleaned", fg=COLOR_IMPORT)
         self.close_btn.config(state="normal", bg=COLOR_EXPORT)
     def on_attempt_close(self):
         if self.finished: self.destroy()
@@ -124,181 +135,193 @@ class LinuxSweep:
         self.check_queue()
 
     def setup_ui(self):
-        # 1. Top Bar with Reordered Buttons and Unified Search
+        style = ttk.Style(); style.theme_use('clam')
         top = tk.Frame(self.root, bg=COLOR_BG, padx=25, pady=20); top.pack(fill="x")
         btn_cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 18, "pady": 6, "cursor": "hand2"}
-        
         tk.Button(top, text="Import Preset", bg=COLOR_IMPORT, command=self.import_preset, **btn_cfg).pack(side="left", padx=5)
         tk.Button(top, text="Export Preset", bg=COLOR_EXPORT, command=self.export_preset, **btn_cfg).pack(side="left", padx=5)
-
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *a: self.refresh_display())
-        
-        # Combined Search Wrapper (Single Border)
         search_unit = tk.Frame(top, bg=COLOR_BG, highlightthickness=1, highlightbackground=COLOR_BORDER)
         search_unit.pack(side="left", fill="x", expand=True, padx=(20, 5))
-        
-        # Inner Entry (No border of its own)
         self.search_entry = tk.Entry(search_unit, textvariable=self.search_var, font=("Arial", 11), relief="flat", bg=COLOR_BG, borderwidth=0, highlightthickness=0)
         self.search_entry.pack(side="left", fill="x", expand=True, padx=(10, 5), ipady=5)
-        
-        # 1px Vertical Separator
         tk.Frame(search_unit, width=1, bg=COLOR_BORDER).pack(side="left", fill="y")
-        
-        # Flush Clear Button
-        tk.Button(search_unit, text="✕", font=("Arial", 10, "bold"), relief="flat", bg=COLOR_BG, fg="gray", activebackground=COLOR_BG, width=4, cursor="hand2", command=lambda: self.search_var.set("")).pack(side="right")
-
-        # 2. List Container
+        tk.Button(search_unit, text="✕", font=("Arial", 10, "bold"), relief="flat", bg=COLOR_BG, fg="gray", width=4, command=lambda: self.search_var.set("")).pack(side="right")
         self.container = tk.Frame(self.root, bg=COLOR_BG); self.container.pack(fill="both", expand=True, padx=25)
         self.canvas = tk.Canvas(self.container, highlightthickness=0, bg=COLOR_BG)
         self.scrollbar = ttk.Scrollbar(self.container, orient="vertical", command=self.canvas.yview)
         self.list_inner = tk.Frame(self.canvas, bg=COLOR_BG)
         self.inner_window = self.canvas.create_window((0, 0), window=self.list_inner, anchor="nw")
-        
         self.canvas.bind('<Configure>', lambda e: self.canvas.itemconfig(self.inner_window, width=e.width))
         self.list_inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True); self.scrollbar.pack(side="right", fill="y")
         
-        # Unfocus Search when clicking list
+        # Fixed Scrolling
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind_all("<Button-4>", self._on_mousewheel)
+        self.canvas.bind_all("<Button-5>", self._on_mousewheel)
         self.canvas.bind("<Button-1>", lambda e: self.root.focus_set())
         self.list_inner.bind("<Button-1>", lambda e: self.root.focus_set())
-        self.canvas.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
-        self.canvas.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units"))
 
-        # 3. Footer
         footer = tk.Frame(self.root, bg=COLOR_BG, padx=25, pady=20); footer.pack(fill="x")
         self.status_lbl = tk.Label(footer, text="0 apps selected", bg=COLOR_BG, fg="gray", font=("Arial", 10))
         self.status_lbl.pack(side="left")
         tk.Button(footer, text="UNINSTALL SELECTED", bg=COLOR_DANGER, command=self.show_confirm, **btn_cfg).pack(side="right")
 
+    def _on_mousewheel(self, event):
+        if event.num == 4 or event.delta > 0: self.canvas.yview_scroll(-1, "units")
+        elif event.num == 5 or event.delta < 0: self.canvas.yview_scroll(1, "units")
+
     def find_icon(self, name):
         if not name: return None
         if os.path.isabs(name) and os.path.exists(name): return name
-        for r in ["/usr/share/icons/hicolor/48x48/apps", "/usr/share/pixmaps", "/usr/share/icons/Adwaita/48x48/apps"]:
+        # All major icon search paths including Flatpak and Snap
+        paths = [
+            "/usr/share/icons/hicolor/48x48/apps", "/usr/share/pixmaps", 
+            "/usr/share/icons/Adwaita/48x48/apps",
+            "/var/lib/flatpak/exports/share/icons/hicolor/48x48/apps",
+            "/var/lib/snapd/desktop/icons"
+        ]
+        for r in paths:
+            if not os.path.exists(r): continue
             for e in [".png", ".svg", ".xpm"]:
-                full_path = os.path.join(r, f"{name}{e}")
-                if os.path.exists(full_path): return full_path
+                fp = os.path.join(r, f"{name}{e}")
+                if os.path.exists(fp): return fp
         return None
 
+    def get_bulk_owners(self, paths):
+        owners = {}
+        if not paths: return owners
+        try:
+            if "APT" in self.pm_type:
+                res = subprocess.run(["dpkg", "-S"] + paths, capture_output=True, text=True).stdout
+                for l in res.splitlines():
+                    if ":" in l: pkg, path = l.split(": ", 1); owners[path.strip()] = pkg.strip()
+            elif "DNF" in self.pm_type or "ZYPPER" in self.pm_type:
+                res = subprocess.run(["rpm", "-qf", "--qf", "%{NAME}\n"] + paths, capture_output=True, text=True).stdout
+                pkgs = res.splitlines()
+                for i, path in enumerate(paths):
+                    if i < len(pkgs): owners[path] = pkgs[i]
+            elif "PACMAN" in self.pm_type:
+                res = subprocess.run(["pacman", "-Qqo"] + paths, capture_output=True, text=True).stdout
+                pkgs = res.splitlines()
+                for i, path in enumerate(paths):
+                    if i < len(pkgs): owners[path] = pkgs[i]
+        except: pass
+        return owners
+
     def refresh_app_list(self):
+        """Robust multi-source application discovery"""
         self.app_data_map, all_files = {}, []
-        for d in ["/usr/share/applications", "/usr/local/share/applications", os.path.expanduser("~/.local/share/applications")]:
-            if os.path.exists(d): all_files.extend([os.path.join(d, f) for f in os.listdir(d) if f.endswith(".desktop")])
+        
+        # 1. Scan standard system paths
+        sys_paths = [
+            "/usr/share/applications", "/usr/local/share/applications", 
+            os.path.expanduser("~/.local/share/applications")
+        ]
+        for d in sys_paths:
+            if os.path.exists(d):
+                all_files.extend([os.path.join(d, f) for f in os.listdir(d) if f.endswith(".desktop")])
+        
         owners = self.get_bulk_owners(all_files)
         for path in all_files:
-            pkg_id = owners.get(path)
-            if pkg_id:
-                try:
-                    name, icon = "", ""
-                    with open(path, 'r', errors='ignore') as f:
-                        for l in f:
-                            if l.startswith("Name="): name = l.split("=")[1].strip()
-                            if l.startswith("Icon="): icon = l.split("=")[1].strip()
-                    uid = f"{pkg_id}_{self.pm_type}"
-                    if uid not in self.app_data_map:
-                        self.app_data_map[uid] = {"name": name or pkg_id, "id": pkg_id, "icon": icon, "pm": self.pm_type}
-                except: continue
+            # Fallback to filename if no owner (common in Fedora core apps)
+            pkg_id = owners.get(path) or os.path.basename(path).replace(".desktop", "")
+            try:
+                name, icon = "", ""
+                with open(path, 'r', errors='ignore') as f:
+                    for l in f:
+                        if l.startswith("Name="): name = l.split("=")[1].strip()
+                        if l.startswith("Icon="): icon = l.split("=")[1].strip()
+                uid = f"{pkg_id}_{self.pm_type}"
+                if uid not in self.app_data_map:
+                    self.app_data_map[uid] = {"name": name or pkg_id, "id": pkg_id, "icon": icon, "pm": self.pm_type}
+            except: continue
+
+        # 2. Add Flatpaks
         try:
-            fp = subprocess.check_output(["flatpak", "list", "--columns=name,application,icon"], stderr=subprocess.DEVNULL).decode()
-            for line in fp.strip().split('\n'):
+            fp_raw = subprocess.check_output(["flatpak", "list", "--columns=name,application,icon"], stderr=subprocess.DEVNULL).decode()
+            for line in fp_raw.strip().split('\n'):
                 p = line.split('\t')
                 if len(p) >= 2:
                     uid = f"{p[1]}_FLATPAK"
                     self.app_data_map[uid] = {"name": p[0], "id": p[1], "icon": p[2] if len(p)>2 else "", "pm": "FLATPAK"}
         except: pass
+
+        # 3. Add Snaps (New Logic)
+        try:
+            snaps = subprocess.check_output(["snap", "list"], stderr=subprocess.DEVNULL).decode().splitlines()[1:]
+            for s in snaps:
+                parts = s.split()
+                if len(parts) >= 1:
+                    sid = parts[0]
+                    if sid in ["snapd", "core", "bare"]: continue # Skip base snaps
+                    uid = f"{sid}_SNAP"
+                    self.app_data_map[uid] = {"name": sid.capitalize(), "id": sid, "icon": sid, "pm": "SNAP"}
+        except: pass
+
         self.refresh_display()
 
     def refresh_display(self):
-        """Build high-density list"""
         for w in self.list_inner.winfo_children(): w.destroy()
         self.row_data = {}
         query = self.search_var.get().lower()
         for uid in sorted(self.app_data_map.keys(), key=lambda k: self.app_data_map[k]['name'].lower()):
             app = self.app_data_map[uid]
             if query in app['name'].lower() or query in app['id'].lower():
-                is_p = any(p in app['id'] for p in PROTECTED)
+                is_p = any(p in app['id'].lower() for p in PROTECTED)
                 row = tk.Frame(self.list_inner, bg=COLOR_BG, highlightthickness=1, highlightbackground=COLOR_BORDER, padx=12, pady=0)
                 row.pack(fill="x", pady=1, padx=5)
-                
-                var = self.selection_vars.get(uid, tk.BooleanVar())
-                self.selection_vars[uid] = var
-                check = tk.Label(row, text="□", font=("Arial", 16), bg=COLOR_BG, fg=COLOR_BORDER, width=2)
-                check.pack(side="left")
-                
+                var = self.selection_vars.get(uid, tk.BooleanVar()); self.selection_vars[uid] = var
+                tk.Label(row, text="▣" if var.get() else "□", font=("Arial", 16), bg=COLOR_BG, fg=COLOR_ACCENT if var.get() else COLOR_BORDER, width=2).pack(side="left")
                 icon_path = self.find_icon(app['icon'])
-                icon_lbl = tk.Label(row, bg=COLOR_BG)
                 if icon_path:
                     try:
                         img = Image.open(icon_path).resize((22, 22), Image.Resampling.LANCZOS)
                         self.icon_cache[icon_path] = ImageTk.PhotoImage(img)
-                        icon_lbl.config(image=self.icon_cache[icon_path])
+                        tk.Label(row, image=self.icon_cache[icon_path], bg=COLOR_BG).pack(side="left", padx=10)
                     except: pass
-                icon_lbl.pack(side="left", padx=10)
-                
-                name_lbl = tk.Label(row, text=f"{app['name']} ({app['id']})", fg="red" if is_p else COLOR_TEXT, bg=COLOR_BG, font=("Arial", 9))
-                name_lbl.pack(side="left")
-                
-                pm_lbl = tk.Label(row, text=f"[{app['pm']}]", fg=COLOR_ACCENT, bg=COLOR_BG, font=("Arial", 7, "bold"))
+                tk.Label(row, text=f"{app['name']} ({app['id']})", fg="red" if is_p else COLOR_TEXT, bg=COLOR_BG, font=("Arial", 9)).pack(side="left")
+                pm_lbl = tk.Label(row, text=f"[{app['pm']}]", fg=COLOR_ACCENT if app['pm'] != "SNAP" else "#FF9800", bg=COLOR_BG, font=("Arial", 7, "bold"))
                 pm_lbl.pack(side="right", padx=15)
-                
-                self.row_data[uid] = [row, check, icon_lbl, name_lbl, pm_lbl]
-                
+                self.row_data[uid] = row
                 if not is_p:
-                    for w in self.row_data[uid]:
-                        w.bind("<Button-1>", lambda e, u=uid: self.toggle_app(u))
-                        w.bind("<Enter>", lambda e, u=uid: self.on_hover(u, True))
-                        w.bind("<Leave>", lambda e, u=uid: self.on_hover(u, False))
+                    for w in row.winfo_children(): w.bind("<Button-1>", lambda e, u=uid: self.toggle_app(u))
+                    row.bind("<Button-1>", lambda e, u=uid: self.toggle_app(u))
                 if var.get(): self.update_row_ui(uid)
 
-    def on_hover(self, uid, entering):
-        if self.selection_vars[uid].get(): return
-        color = COLOR_HOVER if entering else COLOR_BG
-        for w in self.row_data[uid]: w.config(bg=color)
-
     def update_row_ui(self, uid):
-        sel = self.selection_vars[uid].get()
-        color = COLOR_SELECTED if sel else COLOR_BG
-        widgets = self.row_data[uid]
-        widgets[0].config(bg=color)
-        widgets[1].config(text="▣" if sel else "□", fg=COLOR_ACCENT if sel else COLOR_BORDER, bg=color)
-        for w in widgets[2:]: w.config(bg=color)
+        sel = self.selection_vars[uid].get(); color = COLOR_SELECTED if sel else COLOR_BG
+        self.row_data[uid].config(bg=color)
+        for w in self.row_data[uid].winfo_children():
+            w.config(bg=color)
+            if isinstance(w, tk.Label) and len(w.cget("text")) <= 2:
+                w.config(text="▣" if sel else "□", fg=COLOR_ACCENT if sel else COLOR_BORDER)
 
     def toggle_app(self, uid):
-        if any(p in uid for p in PROTECTED): return
         self.selection_vars[uid].set(not self.selection_vars[uid].get())
         self.update_row_ui(uid); self.root.focus_set()
         count = sum(1 for v in self.selection_vars.values() if v.get())
         self.status_lbl.config(text=f"{count} apps selected")
 
-    def get_bulk_owners(self, paths):
-        owners = {}
-        try:
-            if "APT" in self.pm_type:
-                res = subprocess.run(["dpkg", "-S"] + paths, capture_output=True, text=True).stdout
-                for l in res.splitlines():
-                    if ":" in l: pkg, path = l.split(": ", 1); owners[path.strip()] = pkg.strip()
-        except: pass
-        return owners
-
     def export_preset(self):
         ids = [self.app_data_map[uid]['id'] for uid, v in self.selection_vars.items() if v.get()]
         if not ids: return
-        p = filedialog.asksaveasfilename(initialdir=USER_HOME, defaultextension=".json", filetypes=[("JSON files", "*.json")])
+        p = filedialog.asksaveasfilename(initialdir=USER_HOME, defaultextension=".json", filetypes=[("JSON", "*.json")])
         if p:
             with open(p, 'w') as f: json.dump(ids, f, indent=4)
-            messagebox.showinfo("Export Success", f"Successfully exported {len(ids)} applications.")
+            messagebox.showinfo("Success", f"Exported {len(ids)} applications.")
 
     def import_preset(self):
-        p = filedialog.askopenfilename(initialdir=USER_HOME, filetypes=[("JSON files", "*.json")])
+        p = filedialog.askopenfilename(initialdir=USER_HOME, filetypes=[("JSON", "*.json")])
         if not p: return
-        try:
-            with open(p, 'r') as f: imp = json.load(f)
-            count = 0
-            for uid, app in self.app_data_map.items():
-                if app['id'] in imp: self.selection_vars[uid].set(True); count += 1; self.update_row_ui(uid)
-            messagebox.showinfo("Import Success", f"Successfully imported {count} applications.")
-        except: pass
+        with open(p, 'r') as f: imp = json.load(f)
+        count = 0
+        for uid, app in self.app_data_map.items():
+            if app['id'] in imp: self.selection_vars[uid].set(True); count += 1; self.update_row_ui(uid)
+        messagebox.showinfo("Success", f"Imported {count} apps.")
 
     def check_queue(self):
         try:
@@ -310,29 +333,49 @@ class LinuxSweep:
         self.root.after(100, self.check_queue)
 
     def show_confirm(self):
-        native = [uid.split('_')[0] for uid, v in self.selection_vars.items() if v.get() and uid.endswith(self.pm_type)]
-        flat = [uid.split('_')[0] for uid, v in self.selection_vars.items() if v.get() and uid.endswith("FLATPAK")]
-        if native or flat: CustomConfirm(self.root, len(native)+len(flat), lambda: self.worker_start(native, flat))
+        sel = [uid for uid, v in self.selection_vars.items() if v.get()]
+        if sel: CustomConfirm(self.root, len(sel), lambda: self.start_uninstall(sel))
 
-    def worker_start(self, native, flat):
-        self.lw = LogWindow(self.root); threading.Thread(target=self.worker_thread, args=(native, flat), daemon=True).start()
+    def start_uninstall(self, uids):
+        self.lw = LogWindow(self.root)
+        threading.Thread(target=self.worker_thread, args=(uids,), daemon=True).start()
 
-    def worker_thread(self, native, flat):
+    def worker_thread(self, uids):
+        """Surgical removal using native commands for each platform"""
+        native, flatpak, snap = [], [], []
+        for uid in uids:
+            app = self.app_data_map[uid]
+            if app['pm'] == "FLATPAK": flatpak.append(app['id'])
+            elif app['pm'] == "SNAP": snap.append(app['id'])
+            else: native.append(app['id'])
+
+        # Native PM removal
         if native:
             cmd = {"APT":["apt","purge","-y"],"DNF":["dnf","remove","-y"],"PACMAN":["pacman","-Rns","--noconfirm"],"ZYPPER":["zypper","remove","-y"]}[self.pm_type]
-            proc = subprocess.Popen(cmd + native, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            for l in proc.stdout: self.log_queue.put(l)
-            proc.wait()
-        if flat:
-            proc = subprocess.Popen(["flatpak", "uninstall", "-y"] + flat, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            for l in proc.stdout: self.log_queue.put(l)
-            proc.wait()
+            p = subprocess.Popen(cmd + native, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            for l in p.stdout: self.log_queue.put(l)
+            p.wait()
+
+        # Flatpak removal
+        if flatpak:
+            p = subprocess.Popen(["flatpak", "uninstall", "-y"] + flatpak, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            for l in p.stdout: self.log_queue.put(l)
+            p.wait()
+
+        # Snap removal (New surgical command)
+        if snap:
+            for s in snap:
+                self.log_queue.put(f"Surgically removing snap: {s}...\n")
+                p = subprocess.Popen(["snap", "remove", "--purge", s], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                for l in p.stdout: self.log_queue.put(l)
+                p.wait()
+
         self.log_queue.put("DONE")
 
 if __name__ == "__main__":
     root = tk.Tk(); app = LinuxSweep(root, sys.argv[1]); root.mainloop()
 EOF
 
-# ----------- 4. EXECUTION -----------
+# ----------- 5. EXECUTION -----------
 python3 "$PY_FILE" "$PM_TYPE"
 rm "$PY_FILE"
