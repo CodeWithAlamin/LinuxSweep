@@ -57,10 +57,10 @@ cat << 'EOF' > "$PY_FILE"
 import os, sys, json, subprocess, tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from PIL import Image, ImageTk
-import threading, queue, pwd
+import threading, queue, pwd, signal
 
 # Core system protections
-PROTECTED = ["python3", "python", "pkexec", "tkinter", "niri", "snapd", "flatpak"]
+PROTECTED = ["python3", "python", "pkexec", "tkinter", "niri", "snapd", "flatpak", "bash", "sudo"]
 COLOR_BG, COLOR_HOVER, COLOR_SELECTED = "#ffffff", "#f8f9fa", "#e7f3ff"
 COLOR_BORDER, COLOR_TEXT, COLOR_ACCENT = "#e0e0e0", "#333333", "#1976d2"
 COLOR_IMPORT, COLOR_EXPORT, COLOR_DANGER = "#4caf50", "#607d8b", "#f44336"
@@ -80,46 +80,68 @@ class CustomConfirm(tk.Toplevel):
         self.geometry("450x280")
         self.configure(bg=COLOR_BG)
         self.resizable(False, False)
-        self.transient(parent)
-        self.grab_set()
+        self.transient(parent); self.grab_set()
         self.callback = callback
         f = tk.Frame(self, bg=COLOR_BG); f.pack(expand=True)
-        tk.Label(f, text="⚠ Confirm Action", font=("Arial", 14, "bold"), bg=COLOR_BG, fg=COLOR_DANGER).pack(pady=(0, 15))
-        tk.Label(f, text=f"Uninstall {count} selected applications?", font=("Arial", 11), bg=COLOR_BG, fg=COLOR_TEXT).pack(pady=10)
+        tk.Label(f, text="⚠ Confirm Surgical Purge", font=("Arial", 14, "bold"), bg=COLOR_BG, fg=COLOR_DANGER).pack(pady=(0, 15))
+        tk.Label(f, text=f"Uninstall {count} apps and all related components?", font=("Arial", 11), bg=COLOR_BG, fg=COLOR_TEXT).pack(pady=10)
         btn_f = tk.Frame(f, bg=COLOR_BG, pady=20); btn_f.pack()
         cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 25, "pady": 8, "cursor": "hand2"}
         tk.Button(btn_f, text="CANCEL", bg=COLOR_EXPORT, command=self.destroy, **cfg).pack(side="left", padx=10)
-        tk.Button(btn_f, text="UNINSTALL", bg=COLOR_DANGER, command=self.confirm, **cfg).pack(side="left", padx=10)
+        tk.Button(btn_f, text="PURGE ALL", bg=COLOR_DANGER, command=self.confirm, **cfg).pack(side="left", padx=10)
     def confirm(self): self.destroy(); self.callback()
 
 class LogWindow(tk.Toplevel):
-    def __init__(self, parent):
+    def __init__(self, parent, cancel_callback):
         super().__init__(parent)
         self.title("LinuxSweep Logs")
-        self.geometry("750x600")
+        self.geometry("750x650")
         self.configure(bg=COLOR_BG)
         self.protocol("WM_DELETE_WINDOW", self.on_attempt_close)
+        self.cancel_callback = cancel_callback
         self.finished = False
-        self.label = tk.Label(self, text="Processing Tasks...", font=("Arial", 12, "bold"), bg=COLOR_BG, fg=COLOR_TEXT, pady=20)
+
+        self.label = tk.Label(self, text="Surgically Purging Applications...", font=("Arial", 12, "bold"), bg=COLOR_BG, fg=COLOR_TEXT, pady=20)
         self.label.pack()
         self.progress = ttk.Progressbar(self, mode='indeterminate', length=650)
         self.progress.pack(pady=5, padx=30); self.progress.start(15)
+
         self.log_container = tk.Frame(self, bg=COLOR_BG, highlightthickness=1, highlightbackground=COLOR_BORDER)
         self.log_container.pack(fill="both", expand=True, padx=30, pady=20)
         self.text_area = tk.Text(self.log_container, bg="#fafafa", fg=COLOR_TEXT, font=("Monospace", 9), relief="flat", padx=15, pady=15)
         self.scrollbar = ttk.Scrollbar(self.log_container, orient="vertical", command=self.text_area.yview)
         self.text_area.configure(yscrollcommand=self.scrollbar.set)
         self.text_area.pack(side="left", fill="both", expand=True); self.scrollbar.pack(side="right", fill="y")
-        self.close_btn = tk.Button(self, text="CLOSE WINDOW", command=self.destroy, state="disabled", font=("Arial", 10, "bold"), relief="flat", bg="#cccccc", fg="white", padx=25, pady=8, cursor="hand2")
-        self.close_btn.pack(pady=20)
+
+        self.btn_frame = tk.Frame(self, bg=COLOR_BG, pady=20)
+        self.btn_frame.pack(fill="x")
+        
+        btn_cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 25, "pady": 8, "cursor": "hand2"}
+        
+        # New Cancel Button
+        self.cancel_btn = tk.Button(self.btn_frame, text="CANCEL REMAINING", command=self.request_cancel, bg=COLOR_DANGER, **btn_cfg)
+        self.cancel_btn.pack(side="left", padx=(180, 10))
+        
+        self.close_btn = tk.Button(self.btn_frame, text="CLOSE WINDOW", command=self.destroy, state="disabled", bg="#cccccc", **btn_cfg)
+        self.close_btn.pack(side="left", padx=10)
+
     def log(self, msg): self.text_area.insert(tk.END, msg); self.text_area.see(tk.END)
+
+    def request_cancel(self):
+        if messagebox.askyesno("Confirm Cancel", "Are you sure you want to stop the current process and cancel remaining uninstalls?"):
+            self.cancel_callback()
+            self.log("\n🛑 PROCESS TERMINATED BY USER\n")
+            self.cancel_btn.config(state="disabled", bg="#cccccc")
+
     def finalize(self):
         self.finished = True; self.progress.stop(); self.progress.config(mode='determinate', value=100)
-        self.label.config(text="✔ DONE: System Cleaned", fg=COLOR_IMPORT)
+        self.label.config(text="✔ DONE: System Swept Clean", fg=COLOR_IMPORT)
+        self.cancel_btn.config(state="disabled", bg="#cccccc")
         self.close_btn.config(state="normal", bg=COLOR_EXPORT)
+
     def on_attempt_close(self):
         if self.finished: self.destroy()
-        else: messagebox.showwarning("Busy", "Process is still running.")
+        else: messagebox.showwarning("Busy", "Process is still running. Use Cancel to stop.")
 
 class LinuxSweep:
     def __init__(self, root, pm_type):
@@ -130,6 +152,8 @@ class LinuxSweep:
         self.root.configure(bg=COLOR_BG)
         self.icon_cache, self.app_data_map, self.selection_vars, self.row_data = {}, {}, {}, {}
         self.log_queue = queue.Queue()
+        self.current_proc = None
+        self.is_cancelled = False
         self.setup_ui()
         self.refresh_app_list()
         self.check_queue()
@@ -158,12 +182,10 @@ class LinuxSweep:
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True); self.scrollbar.pack(side="right", fill="y")
         
-        # Fixed Scrolling
+        # Mousewheel Scroll Support
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
         self.canvas.bind_all("<Button-4>", self._on_mousewheel)
         self.canvas.bind_all("<Button-5>", self._on_mousewheel)
-        self.canvas.bind("<Button-1>", lambda e: self.root.focus_set())
-        self.list_inner.bind("<Button-1>", lambda e: self.root.focus_set())
 
         footer = tk.Frame(self.root, bg=COLOR_BG, padx=25, pady=20); footer.pack(fill="x")
         self.status_lbl = tk.Label(footer, text="0 apps selected", bg=COLOR_BG, fg="gray", font=("Arial", 10))
@@ -177,13 +199,7 @@ class LinuxSweep:
     def find_icon(self, name):
         if not name: return None
         if os.path.isabs(name) and os.path.exists(name): return name
-        # All major icon search paths including Flatpak and Snap
-        paths = [
-            "/usr/share/icons/hicolor/48x48/apps", "/usr/share/pixmaps", 
-            "/usr/share/icons/Adwaita/48x48/apps",
-            "/var/lib/flatpak/exports/share/icons/hicolor/48x48/apps",
-            "/var/lib/snapd/desktop/icons"
-        ]
+        paths = ["/usr/share/icons/hicolor/48x48/apps", "/usr/share/pixmaps", "/usr/share/icons/Adwaita/48x48/apps", "/var/lib/flatpak/exports/share/icons/hicolor/48x48/apps", "/var/lib/snapd/desktop/icons"]
         for r in paths:
             if not os.path.exists(r): continue
             for e in [".png", ".svg", ".xpm"]:
@@ -213,21 +229,12 @@ class LinuxSweep:
         return owners
 
     def refresh_app_list(self):
-        """Robust multi-source application discovery"""
         self.app_data_map, all_files = {}, []
-        
-        # 1. Scan standard system paths
-        sys_paths = [
-            "/usr/share/applications", "/usr/local/share/applications", 
-            os.path.expanduser("~/.local/share/applications")
-        ]
+        sys_paths = ["/usr/share/applications", "/usr/local/share/applications", os.path.expanduser("~/.local/share/applications")]
         for d in sys_paths:
-            if os.path.exists(d):
-                all_files.extend([os.path.join(d, f) for f in os.listdir(d) if f.endswith(".desktop")])
-        
+            if os.path.exists(d): all_files.extend([os.path.join(d, f) for f in os.listdir(d) if f.endswith(".desktop")])
         owners = self.get_bulk_owners(all_files)
         for path in all_files:
-            # Fallback to filename if no owner (common in Fedora core apps)
             pkg_id = owners.get(path) or os.path.basename(path).replace(".desktop", "")
             try:
                 name, icon = "", ""
@@ -239,8 +246,6 @@ class LinuxSweep:
                 if uid not in self.app_data_map:
                     self.app_data_map[uid] = {"name": name or pkg_id, "id": pkg_id, "icon": icon, "pm": self.pm_type}
             except: continue
-
-        # 2. Add Flatpaks
         try:
             fp_raw = subprocess.check_output(["flatpak", "list", "--columns=name,application,icon"], stderr=subprocess.DEVNULL).decode()
             for line in fp_raw.strip().split('\n'):
@@ -249,19 +254,15 @@ class LinuxSweep:
                     uid = f"{p[1]}_FLATPAK"
                     self.app_data_map[uid] = {"name": p[0], "id": p[1], "icon": p[2] if len(p)>2 else "", "pm": "FLATPAK"}
         except: pass
-
-        # 3. Add Snaps (New Logic)
         try:
             snaps = subprocess.check_output(["snap", "list"], stderr=subprocess.DEVNULL).decode().splitlines()[1:]
             for s in snaps:
                 parts = s.split()
                 if len(parts) >= 1:
                     sid = parts[0]
-                    if sid in ["snapd", "core", "bare"]: continue # Skip base snaps
-                    uid = f"{sid}_SNAP"
-                    self.app_data_map[uid] = {"name": sid.capitalize(), "id": sid, "icon": sid, "pm": "SNAP"}
+                    if sid in ["snapd", "core", "bare"]: continue
+                    uid = f"{sid}_SNAP"; self.app_data_map[uid] = {"name": sid.capitalize(), "id": sid, "icon": sid, "pm": "SNAP"}
         except: pass
-
         self.refresh_display()
 
     def refresh_display(self):
@@ -323,6 +324,15 @@ class LinuxSweep:
             if app['id'] in imp: self.selection_vars[uid].set(True); count += 1; self.update_row_ui(uid)
         messagebox.showinfo("Success", f"Imported {count} apps.")
 
+    def abort_uninstall(self):
+        """Halts the uninstallation thread and kills current subprocess"""
+        self.is_cancelled = True
+        if self.current_proc:
+            try:
+                os.killpg(os.getpgid(self.current_proc.pid), signal.SIGTERM)
+            except:
+                self.current_proc.terminate()
+
     def check_queue(self):
         try:
             while True:
@@ -337,11 +347,12 @@ class LinuxSweep:
         if sel: CustomConfirm(self.root, len(sel), lambda: self.start_uninstall(sel))
 
     def start_uninstall(self, uids):
-        self.lw = LogWindow(self.root)
+        self.is_cancelled = False
+        self.lw = LogWindow(self.root, self.abort_uninstall)
         threading.Thread(target=self.worker_thread, args=(uids,), daemon=True).start()
 
     def worker_thread(self, uids):
-        """Surgical removal using native commands for each platform"""
+        """Surgical removal using native commands with orphan cleanup"""
         native, flatpak, snap = [], [], []
         for uid in uids:
             app = self.app_data_map[uid]
@@ -349,26 +360,33 @@ class LinuxSweep:
             elif app['pm'] == "SNAP": snap.append(app['id'])
             else: native.append(app['id'])
 
-        # Native PM removal
+        # Removal Logic with Cancellation Checks
+        def run_proc(cmd):
+            if self.is_cancelled: return
+            self.current_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, preexec_fn=os.setsid)
+            for l in self.current_proc.stdout:
+                if self.is_cancelled: break
+                self.log_queue.put(l)
+            self.current_proc.wait()
+            self.current_proc = None
+
         if native:
-            cmd = {"APT":["apt","purge","-y"],"DNF":["dnf","remove","-y"],"PACMAN":["pacman","-Rns","--noconfirm"],"ZYPPER":["zypper","remove","-y"]}[self.pm_type]
-            p = subprocess.Popen(cmd + native, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            for l in p.stdout: self.log_queue.put(l)
-            p.wait()
+            cmd_map = {
+                "APT": ["apt-get", "purge", "-y", "--auto-remove"],
+                "DNF": ["dnf", "remove", "-y", "--setopt=clean_requirements_on_remove=1"],
+                "PACMAN": ["pacman", "-Rns", "--noconfirm"],
+                "ZYPPER": ["zypper", "remove", "-y", "--clean-deps"]
+            }
+            run_proc(cmd_map.get(self.pm_type, ["echo", "Unknown PM"]) + native)
 
-        # Flatpak removal
-        if flatpak:
-            p = subprocess.Popen(["flatpak", "uninstall", "-y"] + flatpak, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            for l in p.stdout: self.log_queue.put(l)
-            p.wait()
+        if flatpak and not self.is_cancelled:
+            run_proc(["flatpak", "uninstall", "-y"] + flatpak)
 
-        # Snap removal (New surgical command)
-        if snap:
+        if snap and not self.is_cancelled:
             for s in snap:
+                if self.is_cancelled: break
                 self.log_queue.put(f"Surgically removing snap: {s}...\n")
-                p = subprocess.Popen(["snap", "remove", "--purge", s], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-                for l in p.stdout: self.log_queue.put(l)
-                p.wait()
+                run_proc(["snap", "remove", "--purge", s])
 
         self.log_queue.put("DONE")
 
