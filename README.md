@@ -35,7 +35,7 @@ To run LinuxSweep, ensure you have the following dependencies installed (the scr
 ### ⚡ Quick Start (Run Instantly)
 Run LinuxSweep immediately without cloning the repository:
 ```bash
-curl -fsSL [https://raw.githubusercontent.com/CodeWithAlamin/LinuxSweep/refs/heads/main/linux_sweep.sh](https://raw.githubusercontent.com/CodeWithAlamin/LinuxSweep/refs/heads/main/linux_sweep.sh) | bash
+curl -fsSL https://raw.githubusercontent.com/CodeWithAlamin/LinuxSweep/refs/heads/main/linux_sweep.sh | bash
 ````
 
 ### 🛠️ Standard Installation
@@ -43,8 +43,10 @@ curl -fsSL [https://raw.githubusercontent.com/CodeWithAlamin/LinuxSweep/refs/hea
 1.  **Clone the repository:**
 
     ```bash
-    git clone [https://github.com/CodeWithAlamin/LinuxSweep.git](https://github.com/CodeWithAlamin/LinuxSweep.git)
+    git clone https://github.com/CodeWithAlamin/LinuxSweep.git
     cd LinuxSweep
+    chmod +x linux_sweep.sh
+    ./linux_sweep.sh
     ```
 
 2.  **Make the script executable:**
