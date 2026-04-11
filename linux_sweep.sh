@@ -83,12 +83,12 @@ class CustomConfirm(tk.Toplevel):
         self.transient(parent); self.grab_set()
         self.callback = callback
         f = tk.Frame(self, bg=COLOR_BG); f.pack(expand=True)
-        tk.Label(f, text="⚠ Confirm Surgical Purge", font=("Arial", 14, "bold"), bg=COLOR_BG, fg=COLOR_DANGER).pack(pady=(0, 15))
+        tk.Label(f, text="⚠ Confirm Purge", font=("Arial", 14, "bold"), bg=COLOR_BG, fg=COLOR_DANGER).pack(pady=(0, 15))
         tk.Label(f, text=f"Uninstall {count} apps and all related components?", font=("Arial", 11), bg=COLOR_BG, fg=COLOR_TEXT).pack(pady=10)
         btn_f = tk.Frame(f, bg=COLOR_BG, pady=20); btn_f.pack()
         cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 25, "pady": 8, "cursor": "hand2"}
         tk.Button(btn_f, text="CANCEL", bg=COLOR_EXPORT, command=self.destroy, **cfg).pack(side="left", padx=10)
-        tk.Button(btn_f, text="PURGE ALL", bg=COLOR_DANGER, command=self.confirm, **cfg).pack(side="left", padx=10)
+        tk.Button(btn_f, text="UNINSTALL", bg=COLOR_DANGER, command=self.confirm, **cfg).pack(side="left", padx=10)
     def confirm(self): self.destroy(); self.callback()
 
 class LogWindow(tk.Toplevel):
@@ -101,7 +101,7 @@ class LogWindow(tk.Toplevel):
         self.cancel_callback = cancel_callback
         self.finished = False
 
-        self.label = tk.Label(self, text="Surgically Purging Applications...", font=("Arial", 12, "bold"), bg=COLOR_BG, fg=COLOR_TEXT, pady=20)
+        self.label = tk.Label(self, text="Purging Applications...", font=("Arial", 12, "bold"), bg=COLOR_BG, fg=COLOR_TEXT, pady=20)
         self.label.pack()
         self.progress = ttk.Progressbar(self, mode='indeterminate', length=650)
         self.progress.pack(pady=5, padx=30); self.progress.start(15)
@@ -113,32 +113,42 @@ class LogWindow(tk.Toplevel):
         self.text_area.configure(yscrollcommand=self.scrollbar.set)
         self.text_area.pack(side="left", fill="both", expand=True); self.scrollbar.pack(side="right", fill="y")
 
+        # Independent Scroll for Log Window
+        self.text_area.bind("<MouseWheel>", self._on_log_scroll)
+        self.text_area.bind("<Button-4>", self._on_log_scroll)
+        self.text_area.bind("<Button-5>", self._on_log_scroll)
+
         self.btn_frame = tk.Frame(self, bg=COLOR_BG, pady=20)
         self.btn_frame.pack(fill="x")
         btn_cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 25, "pady": 8, "cursor": "hand2"}
         
-        self.cancel_btn = tk.Button(self.btn_frame, text="CANCEL REMAINING", command=self.request_cancel, bg=COLOR_DANGER, **btn_cfg)
+        # Instant Cancel (No Popup)
+        self.cancel_btn = tk.Button(self.btn_frame, text="CANCEL", command=self.do_instant_cancel, bg=COLOR_DANGER, **btn_cfg)
         self.cancel_btn.pack(side="left", padx=(180, 10))
-        self.close_btn = tk.Button(self.btn_frame, text="CLOSE WINDOW", command=self.destroy, state="disabled", bg="#cccccc", **btn_cfg)
+        self.close_btn = tk.Button(self.btn_frame, text="CLOSE", command=self.destroy, state="disabled", bg="#cccccc", **btn_cfg)
         self.close_btn.pack(side="left", padx=10)
+
+    def _on_log_scroll(self, event):
+        if event.num == 4 or event.delta > 0: self.text_area.yview_scroll(-1, "units")
+        elif event.num == 5 or event.delta < 0: self.text_area.yview_scroll(1, "units")
+        return "break"
 
     def log(self, msg): self.text_area.insert(tk.END, msg); self.text_area.see(tk.END)
 
-    def request_cancel(self):
-        if messagebox.askyesno("Confirm Cancel", "Stop current process and cancel remaining uninstalls?"):
-            self.cancel_callback()
-            self.log("\n🛑 PROCESS TERMINATED BY USER\n")
-            self.cancel_btn.config(state="disabled", bg="#cccccc")
+    def do_instant_cancel(self):
+        self.cancel_callback()
+        self.log("\n🛑 PROCESS TERMINATED INSTANTLY\n")
+        self.cancel_btn.config(state="disabled", bg="#cccccc")
 
     def finalize(self):
         self.finished = True; self.progress.stop(); self.progress.config(mode='determinate', value=100)
-        self.label.config(text="✔ DONE: System Swept Clean", fg=COLOR_IMPORT)
+        self.label.config(text="✔ DONE: System Cleaned", fg=COLOR_IMPORT)
         self.cancel_btn.config(state="disabled", bg="#cccccc")
         self.close_btn.config(state="normal", bg=COLOR_EXPORT)
 
     def on_attempt_close(self):
         if self.finished: self.destroy()
-        else: messagebox.showwarning("Busy", "Process is still running. Use Cancel to stop.")
+        else: messagebox.showwarning("Busy", "Process running. Use Cancel to stop.")
 
 class LinuxSweep:
     def __init__(self, root, pm_type):
@@ -179,7 +189,7 @@ class LinuxSweep:
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True); self.scrollbar.pack(side="right", fill="y")
         
-        # Mousewheel Scroll Support with Territory Fix
+        # Territory-Aware Scrolling
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
         self.canvas.bind_all("<Button-4>", self._on_mousewheel)
         self.canvas.bind_all("<Button-5>", self._on_mousewheel)
@@ -187,11 +197,14 @@ class LinuxSweep:
         footer = tk.Frame(self.root, bg=COLOR_BG, padx=25, pady=20); footer.pack(fill="x")
         self.status_lbl = tk.Label(footer, text="0 apps selected", bg=COLOR_BG, fg="gray", font=("Arial", 10))
         self.status_lbl.pack(side="left")
-        tk.Button(footer, text="UNINSTALL SELECTED", bg=COLOR_DANGER, command=self.show_confirm, **btn_cfg).pack(side="right")
+        
+        # New "Exit" and Improved Naming
+        tk.Button(footer, text="EXIT", bg=COLOR_EXPORT, command=self.root.destroy, **btn_cfg).pack(side="right", padx=(10, 0))
+        tk.Button(footer, text="UNINSTALL", bg=COLOR_DANGER, command=self.show_confirm, **btn_cfg).pack(side="right")
 
     def _on_mousewheel(self, event):
-        """Modified to only scroll if the mouse is inside the main canvas territory"""
-        if str(event.widget).startswith(str(self.canvas)):
+        """Only scrolls main list if mouse is over it"""
+        if str(event.widget).startswith(str(self.canvas)) or str(event.widget).startswith(str(self.list_inner)):
             if event.num == 4 or event.delta > 0: self.canvas.yview_scroll(-1, "units")
             elif event.num == 5 or event.delta < 0: self.canvas.yview_scroll(1, "units")
 
@@ -324,6 +337,7 @@ class LinuxSweep:
         messagebox.showinfo("Success", f"Imported {count} apps.")
 
     def abort_uninstall(self):
+        """Kills process group immediately"""
         self.is_cancelled = True
         if self.current_proc:
             try: os.killpg(os.getpgid(self.current_proc.pid), signal.SIGTERM)
@@ -373,7 +387,6 @@ class LinuxSweep:
             run_proc(cmd_map.get(self.pm_type, ["echo", "Unknown PM"]) + native)
 
         if flatpak and not self.is_cancelled: run_proc(["flatpak", "uninstall", "-y"] + flatpak)
-
         if snap and not self.is_cancelled:
             for s in snap:
                 if self.is_cancelled: break
