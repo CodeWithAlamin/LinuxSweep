@@ -1,18 +1,18 @@
 # 🧹 LinuxSweep
 
-**The ultimate high-density, surgical debloater for Linux distributions.**
+**The ultimate debloater for Linux distributions.**
 
-LinuxSweep is a lightweight, professional GUI utility designed to help you reclaim your system by purging unwanted pre-installed applications and Flatpaks. Built with a focus on speed and a clean, high-density interface, it allows you to "sweep" your distro clean in seconds.
+LinuxSweep is a lightweight, nice GUI utility designed to help you reclaim your system by purging unwanted pre-installed applications. Built with a focus on speed and a clean, high-density interface, it allows you to "sweep" your distro clean in seconds.
 
 ---
 
 ## ✨ Key Features
 
 * **🚀 Cross-Distro Support:** Seamlessly works with **APT**, **DNF**, **Pacman**, and **Zypper**.
-* **📦 Flatpak Integration:** Automatically detects and uninstalls Flatpak applications alongside native packages.
-* **🔍 Search:** A unit-styled, borderless flexible search bar with auto-unfocus logic.
-* **💾 Preset Management:** Import and Export your custom debloat lists as `.json` files to replicate your perfect setup on any machine.
-* **⚡ Instant UX:** Selective row redrawing for a smooth, flicker-free experience.
+* **📦 Flatpak/Snap Integration:** Automatically detects flatpak and snap applications.
+* **🔍 Search:** Easy search functionality.
+* **💾 Preset Management:** Import and Export your custom debloat lists as `.json` files.
+* **🚀 Present Merging:** Easily merge multiple presets.
 
 ---
 
@@ -26,27 +26,23 @@ To run LinuxSweep, ensure you have the following dependencies installed (the scr
 
 * **Python 3**
 * **Tkinter** (Python GUI library)
-* **Pillow** (Python Imaging Library for icons)
 
 ---
 
 ## 🚀 Installation & Usage
 
-### ⚡ Quick Start (Run Instantly)
-Run LinuxSweep immediately without cloning the repository:
+### ⚡ Quick Run
 ```bash
 curl -fsSL https://raw.githubusercontent.com/CodeWithAlamin/LinuxSweep/refs/heads/main/linux_sweep.sh | bash
 ````
 
 ### 🛠️ Standard Installation
 
-1.  **Clone the repository:**
+1.  **Clone the repository and go to the directory:**
 
     ```bash
     git clone https://github.com/CodeWithAlamin/LinuxSweep.git
     cd LinuxSweep
-    chmod +x linux_sweep.sh
-    sudo ./linux_sweep.sh
     ```
 
 2.  **Make the script executable:**
@@ -67,7 +63,7 @@ curl -fsSL https://raw.githubusercontent.com/CodeWithAlamin/LinuxSweep/refs/head
 
 ## 📂 Presets
 
-LinuxSweep uses a simple JSON format for presets. This makes it easy to share your "Debloat Lists" with the community.
+LinuxSweep uses a simple JSON format for presets.
 
 **Example `debloat.json`:**
 
@@ -79,7 +75,7 @@ LinuxSweep uses a simple JSON format for presets. This makes it easy to share yo
 ]
 ```
 
-When importing, LinuxSweep automatically scans your system and selects only the apps that are actually installed, providing a summary notification upon completion.
+When importing, LinuxSweep automatically scans your system and selects only the apps that are actually installed.
 
 -----
 
