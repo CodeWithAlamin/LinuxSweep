@@ -29,29 +29,18 @@ detect_pm() {
 PM_TYPE=$(detect_pm)
 
 # ----------- 3. PACKAGE REFRESH (STARTUP ONLY) -----------
-# This runs once before the GUI starts to ensure fresh metadata
 refresh_package_cache() {
     echo "🔄 Refreshing package database. Please wait..."
     case $PM_TYPE in
-        apt)
-            apt-get update -y || echo "⚠️ Warning: APT refresh failed. Continuing with existing cache."
-            ;;
-        dnf)
-            dnf makecache || echo "⚠️ Warning: DNF refresh failed. Continuing with existing cache."
-            ;;
-        pacman)
-            pacman -Sy --noconfirm || echo "⚠️ Warning: Pacman refresh failed. Continuing with existing cache."
-            ;;
-        zypper)
-            zypper refresh || echo "⚠️ Warning: Zypper refresh failed. Continuing with existing cache."
-            ;;
-        *)
-            echo "ℹ️ Unknown package manager. Skipping cache refresh."
-            ;;
+        apt) apt-get update -y || true ;;
+        dnf) dnf makecache || true ;;
+        pacman) pacman -Sy --noconfirm || true ;;
+        zypper) zypper refresh || true ;;
     esac
 }
 
 # ----------- 4. GRANULAR DEPENDENCY CHECK -----------
+# No Pillow/Imaging requirements
 ensure_pkg() {
     local label=$1; local check_cmd=$2; local apt_pkg=$3; local dnf_pkg=$4; local pacman_pkg=$5; local zyp_pkg=$6
     if ! eval "$check_cmd" &>/dev/null; then
@@ -68,7 +57,6 @@ ensure_pkg() {
 ensure_pkg "Python 3" "command -v python3" "python3" "python3" "python" "python3"
 ensure_pkg "Tkinter" "python3 -c 'import tkinter'" "python3-tk" "python3-tkinter" "tk" "python3-tk"
 
-# Perform the one-time refresh after dependencies are met
 refresh_package_cache
 
 # ----------- 5. THE PYTHON ENGINE -----------
@@ -77,8 +65,9 @@ PY_FILE="/tmp/linux_sweep_engine.py"
 cat << 'EOF' > "$PY_FILE"
 import os, sys, json, subprocess, tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-import threading, queue, pwd, signal
+import threading, queue, pwd, signal, traceback
 
+# Constants & Configuration
 PROTECTED = ["python3", "python", "pkexec", "tkinter", "niri", "snapd", "flatpak", "bash", "sudo"]
 COLOR_BG, COLOR_HOVER, COLOR_SELECTED = "#ffffff", "#f8f9fa", "#e7f3ff"
 COLOR_BORDER, COLOR_TEXT, COLOR_ACCENT = "#e0e0e0", "#333333", "#1976d2"
@@ -95,41 +84,26 @@ USER_HOME = get_user_home()
 HISTORY_DIR = os.path.join(USER_HOME, ".config", "linux_sweep")
 HISTORY_FILE = os.path.join(HISTORY_DIR, "uninstalled_history.json")
 
-class HistorySelectionWindow(tk.Toplevel):
-    def __init__(self, parent, history_list):
+# 1. UI COMPONENT: Custom Confirmation Dialog
+class CustomConfirm(tk.Toplevel):
+    def __init__(self, parent, count, callback):
         super().__init__(parent)
-        self.title("Select History to Export")
-        self.geometry("600x500")
+        self.title("Confirm Removal")
+        self.geometry("450x280")
         self.configure(bg=COLOR_BG)
+        self.resizable(False, False)
         self.transient(parent); self.grab_set()
-        tk.Label(self, text="Deselect apps to exclude from preset:", bg=COLOR_BG, font=("Arial", 10, "bold"), pady=10).pack()
-        self.vars = {}
-        container = tk.Frame(self, bg=COLOR_BG)
-        container.pack(fill="both", expand=True, padx=20, pady=10)
-        canvas = tk.Canvas(container, highlightthickness=0, bg=COLOR_BG)
-        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
-        scroll_frame = tk.Frame(canvas, bg=COLOR_BG)
-        canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        for item in sorted(history_list):
-            var = tk.BooleanVar(value=True); self.vars[item] = var
-            f = tk.Frame(scroll_frame, bg=COLOR_BG); f.pack(fill="x", pady=2)
-            tk.Checkbutton(f, text=item, variable=var, bg=COLOR_BG).pack(side="left")
-        canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
-        scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        btn_f = tk.Frame(self, bg=COLOR_BG, pady=15); btn_f.pack(fill="x")
-        cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 20, "pady": 8}
-        tk.Button(btn_f, text="CANCEL", bg=COLOR_EXPORT, command=self.destroy, **cfg).pack(side="left", padx=(150, 10))
-        tk.Button(btn_f, text="EXPORT SELECTED", bg=COLOR_IMPORT, command=self.export, **cfg).pack(side="left")
+        self.callback = callback
+        f = tk.Frame(self, bg=COLOR_BG); f.pack(expand=True)
+        tk.Label(f, text="⚠ Confirm Purge", font=("Arial", 14, "bold"), bg=COLOR_BG, fg=COLOR_DANGER).pack(pady=(0, 15))
+        tk.Label(f, text=f"Uninstall {count} apps and all related components?", font=("Arial", 11), bg=COLOR_BG, fg=COLOR_TEXT).pack(pady=10)
+        btn_f = tk.Frame(f, bg=COLOR_BG, pady=20); btn_f.pack()
+        cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 25, "pady": 8, "cursor": "hand2"}
+        tk.Button(btn_f, text="CANCEL", bg=COLOR_EXPORT, command=self.destroy, **cfg).pack(side="left", padx=10)
+        tk.Button(btn_f, text="UNINSTALL", bg=COLOR_DANGER, command=self.confirm, **cfg).pack(side="left", padx=10)
+    def confirm(self): self.destroy(); self.callback()
 
-    def export(self):
-        selected = [n for n, v in self.vars.items() if v.get()]
-        if not selected: return
-        p = filedialog.asksaveasfilename(initialdir=USER_HOME, defaultextension=".json")
-        if p:
-            with open(p, 'w') as f: json.dump(selected, f, indent=4)
-            self.destroy()
-
+# 2. UI COMPONENT: Log Window with Robust Scroll
 class LogWindow(tk.Toplevel):
     def __init__(self, parent, cancel_callback):
         super().__init__(parent)
@@ -169,15 +143,18 @@ class LogWindow(tk.Toplevel):
         except tk.TclError: pass
 
     def do_instant_cancel(self):
-        self.cancel_callback()
-        self.log("\n🛑 PROCESS TERMINATED INSTANTLY\n")
-        self.finalize(cancelled=True)
+        try:
+            self.cancel_callback()
+            self.log("\n🛑 PROCESS TERMINATED INSTANTLY\n")
+            self.finalize(cancelled=True)
+        except: pass
 
     def finalize(self, cancelled=False):
         self.finished = True
         try:
             self.progress.stop(); self.progress.config(mode='determinate', value=100)
-            self.label.config(text="⚠ CANCELLED" if cancelled else "✔ DONE", fg=COLOR_DANGER if cancelled else COLOR_IMPORT)
+            status = "⚠ CANCELLED" if cancelled else "✔ DONE"
+            self.label.config(text=status, fg=COLOR_DANGER if cancelled else COLOR_IMPORT)
             self.cancel_btn.config(state="disabled", bg="#cccccc")
             self.close_btn.config(state="normal", bg=COLOR_EXPORT)
         except tk.TclError: pass
@@ -186,6 +163,45 @@ class LogWindow(tk.Toplevel):
         if self.finished: self.destroy()
         else: self.do_instant_cancel()
 
+# 3. UI COMPONENT: History Selector
+class HistorySelectionWindow(tk.Toplevel):
+    def __init__(self, parent, history_list):
+        super().__init__(parent)
+        self.title("Select History to Export")
+        self.geometry("600x500")
+        self.configure(bg=COLOR_BG)
+        self.transient(parent); self.grab_set()
+        tk.Label(self, text="Deselect apps to exclude from preset:", bg=COLOR_BG, font=("Arial", 10, "bold"), pady=10).pack()
+        self.vars = {}
+        container = tk.Frame(self, bg=COLOR_BG)
+        container.pack(fill="both", expand=True, padx=20, pady=10)
+        canvas = tk.Canvas(container, highlightthickness=0, bg=COLOR_BG)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        scroll_frame = tk.Frame(canvas, bg=COLOR_BG)
+        canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        for item in sorted(history_list):
+            var = tk.BooleanVar(value=True); self.vars[item] = var
+            f = tk.Frame(scroll_frame, bg=COLOR_BG); f.pack(fill="x", pady=2)
+            tk.Checkbutton(f, text=item, variable=var, bg=COLOR_BG).pack(side="left")
+        canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
+        scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        btn_f = tk.Frame(self, bg=COLOR_BG, pady=15); btn_f.pack(fill="x")
+        cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 20, "pady": 8}
+        tk.Button(btn_f, text="CANCEL", bg=COLOR_EXPORT, command=self.destroy, **cfg).pack(side="left", padx=(150, 10))
+        tk.Button(btn_f, text="EXPORT SELECTED", bg=COLOR_IMPORT, command=self.export, **cfg).pack(side="left")
+
+    def export(self):
+        selected = [n for n, v in self.vars.items() if v.get()]
+        if not selected: return
+        p = filedialog.asksaveasfilename(initialdir=USER_HOME, defaultextension=".json")
+        if p:
+            try:
+                with open(p, 'w') as f: json.dump(selected, f, indent=4)
+                self.destroy()
+            except: pass
+
+# 4. MAIN ENGINE: LinuxSweep
 class LinuxSweep:
     def __init__(self, root, pm_type):
         self.root = root
@@ -293,6 +309,7 @@ class LinuxSweep:
         q = self.search_var.get().lower()
         for uid in sorted(self.app_data_map.keys(), key=lambda k: self.app_data_map[k]['name'].lower()):
             app = self.app_data_map[uid]
+            # Search matches BOTH App Name and Package ID
             if q in app['name'].lower() or q in app['id'].lower():
                 is_p = any(p in app['id'].lower() for p in PROTECTED)
                 row = tk.Frame(self.list_inner, bg=COLOR_BG, highlightthickness=1, highlightbackground=COLOR_BORDER, padx=12)
@@ -414,7 +431,7 @@ class LinuxSweep:
                 if not self.is_cancelled and self.current_proc.returncode == 0:
                     successful.extend(ids)
                     self.save_to_history(ids)
-            except: pass
+            except Exception as e: self.log_queue.put(f"Error: {str(e)}\n")
             finally: self.current_proc = None
 
         if native:
@@ -427,8 +444,17 @@ class LinuxSweep:
                 run_proc(["snap", "remove", "--purge", s], [s])
         self.log_queue.put("DONE")
 
+# Global Robust Exception Handler
+def global_handler(etype, value, tb):
+    err_msg = "".join(traceback.format_exception(etype, value, tb))
+    print(err_msg)
+    messagebox.showerror("Unexpected Error", f"LinuxSweep encountered an error:\n\n{value}\n\nThe program will attempt to stay open.")
+
 if __name__ == "__main__":
-    root = tk.Tk(); app = LinuxSweep(root, sys.argv[1]); root.mainloop()
+    root = tk.Tk()
+    root.report_callback_exception = global_handler
+    app = LinuxSweep(root, sys.argv[1])
+    root.mainloop()
 EOF
 
 # ----------- 6. EXECUTION -----------
