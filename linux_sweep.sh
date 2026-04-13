@@ -112,7 +112,9 @@ class ModernAlert(tk.Toplevel):
 
     def confirm(self):
         self.destroy()
-        if self.callback: self.callback()
+        if self.callback: 
+            try: self.callback()
+            except: pass
 
 # --- 2. LOG WINDOW ---
 class LogWindow(tk.Toplevel):
@@ -138,10 +140,6 @@ class LogWindow(tk.Toplevel):
         self.text_area.configure(yscrollcommand=self.scrollbar.set)
         self.text_area.pack(side="left", fill="both", expand=True); self.scrollbar.pack(side="right", fill="y")
 
-        self.text_area.bind("<MouseWheel>", self._on_log_scroll)
-        self.text_area.bind("<Button-4>", self._on_log_scroll)
-        self.text_area.bind("<Button-5>", self._on_log_scroll)
-
         self.btn_frame = tk.Frame(self, bg=COLOR_BG, pady=20); self.btn_frame.pack(fill="x")
         cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 25, "pady": 8, "cursor": "hand2"}
         self.cancel_btn = tk.Button(self.btn_frame, text="CANCEL", command=self.do_instant_cancel, bg=COLOR_DANGER, **cfg)
@@ -149,18 +147,9 @@ class LogWindow(tk.Toplevel):
         self.close_btn = tk.Button(self.btn_frame, text="CLOSE", command=self.destroy, state="disabled", bg="#cccccc", **cfg)
         self.close_btn.pack(side="left", padx=10)
 
-    def _on_log_scroll(self, event):
-        try:
-            w = event.widget.winfo_containing(event.x_root, event.y_root)
-            if w and str(w).startswith(str(self.text_area)):
-                if event.num == 4 or event.delta > 0: self.text_area.yview_scroll(-1, "units")
-                elif event.num == 5 or event.delta < 0: self.text_area.yview_scroll(1, "units")
-                return "break"
-        except: pass
-
     def log(self, msg): 
         try: self.text_area.insert(tk.END, msg); self.text_area.see(tk.END)
-        except: pass
+        except tk.TclError: pass
 
     def update_progress(self, current, total, name):
         try:
@@ -220,24 +209,11 @@ class HistorySelectionWindow(tk.Toplevel):
             
         self.canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
         self.scroll_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        
-        self.canvas.bind_all("<MouseWheel>", self._on_scroll)
-        self.canvas.bind_all("<Button-4>", self._on_scroll)
-        self.canvas.bind_all("<Button-5>", self._on_scroll)
 
         btn_f = tk.Frame(self, bg=COLOR_BG, pady=15); btn_f.pack(fill="x")
         cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 20, "pady": 8, "cursor": "hand2"}
         tk.Button(btn_f, text="CANCEL", bg=COLOR_EXPORT, command=self.destroy, **cfg).pack(side="left", padx=(150, 10))
         tk.Button(btn_f, text="EXPORT PRESET", bg=COLOR_IMPORT, command=self.export, **cfg).pack(side="left")
-
-    def _on_scroll(self, event):
-        try:
-            if not self.winfo_exists(): return
-            w = event.widget.winfo_containing(event.x_root, event.y_root)
-            if w and (str(w).startswith(str(self.canvas)) or str(w).startswith(str(self.scroll_frame))):
-                if event.num == 4 or event.delta > 0: self.canvas.yview_scroll(-1, "units")
-                elif event.num == 5 or event.delta < 0: self.canvas.yview_scroll(1, "units")
-        except: pass
 
     def export(self):
         try:
@@ -262,22 +238,38 @@ class LinuxSweep:
         self.app_data_map, self.selection_vars, self.row_data = {}, {}, {}
         self.log_queue = queue.Queue()
         self.current_proc, self.is_cancelled, self.lw = None, False, None
+        
+        # UNIVERSAL SCROLL ROUTER
+        self.root.bind_all("<MouseWheel>", self._universal_scroll)
+        self.root.bind_all("<Button-4>", self._universal_scroll)
+        self.root.bind_all("<Button-5>", self._universal_scroll)
+        
         self.setup_ui()
         self.refresh_app_list()
         self.check_queue()
+
+    def _universal_scroll(self, event):
+        """Forces the scroll event exclusively to the Canvas or Text widget directly beneath the mouse pointer."""
+        try:
+            w = event.widget.winfo_containing(event.x_root, event.y_root)
+            while w:
+                if isinstance(w, (tk.Canvas, tk.Text)):
+                    if event.num == 4 or event.delta > 0: w.yview_scroll(-1, "units")
+                    elif event.num == 5 or event.delta < 0: w.yview_scroll(1, "units")
+                    return "break"
+                w = w.master
+        except: pass
 
     def setup_ui(self):
         style = ttk.Style(); style.theme_use('clam')
         top = tk.Frame(self.root, bg=COLOR_BG, padx=25, pady=20); top.pack(fill="x")
         btn_cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 15, "pady": 6, "cursor": "hand2"}
         
-        # MEANINGFUL BUTTON NAMES
         tk.Button(top, text="Import Preset", bg=COLOR_IMPORT, command=self.import_preset, **btn_cfg).pack(side="left", padx=4)
         tk.Button(top, text="Export Preset", bg=COLOR_EXPORT, command=self.export_preset, **btn_cfg).pack(side="left", padx=4)
         tk.Button(top, text="Export History", bg=COLOR_ACCENT, command=self.export_history, **btn_cfg).pack(side="left", padx=4)
         tk.Button(top, text="Merge Presets", bg="#9c27b0", command=self.merge_presets, **btn_cfg).pack(side="left", padx=4)
         
-        # MODERN, OVERHAULED SEARCH BAR
         self.search_var = tk.StringVar(); self.search_var.trace_add("write", lambda *a: self.refresh_display())
         search_unit = tk.Frame(top, bg=COLOR_BG, highlightthickness=1, highlightbackground=COLOR_BORDER)
         search_unit.pack(side="left", fill="x", expand=True, padx=(15, 0))
@@ -285,7 +277,6 @@ class LinuxSweep:
         self.search_entry = tk.Entry(search_unit, textvariable=self.search_var, font=("Arial", 11), relief="flat", bg=COLOR_BG, borderwidth=0, highlightthickness=0)
         self.search_entry.pack(side="left", fill="x", expand=True, padx=10, pady=7)
         
-        # Paste Bug Fix
         self.search_entry.bind("<Control-v>", self._custom_paste)
         self.search_entry.bind("<Shift-Insert>", self._custom_paste)
         
@@ -301,10 +292,6 @@ class LinuxSweep:
         self.list_inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True); self.scrollbar.pack(side="right", fill="y")
-        
-        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
-        self.canvas.bind_all("<Button-4>", self._on_mousewheel)
-        self.canvas.bind_all("<Button-5>", self._on_mousewheel)
 
         footer = tk.Frame(self.root, bg=COLOR_BG, padx=25, pady=20); footer.pack(fill="x")
         self.status_lbl = tk.Label(footer, text="0 apps selected", bg=COLOR_BG, fg="gray", font=("Arial", 10, "bold"))
@@ -314,21 +301,11 @@ class LinuxSweep:
         tk.Button(footer, text="Uninstall Selected", bg=COLOR_DANGER, command=self.show_confirm, **btn_cfg).pack(side="right")
 
     def _custom_paste(self, event):
-        """Fixes standard Tkinter behavior so pasting over highlighted text deletes it first."""
         try:
             if self.search_entry.select_present():
                 self.search_entry.delete(tk.SEL_FIRST, tk.SEL_LAST)
             self.search_entry.insert(tk.INSERT, self.root.clipboard_get())
             return "break"
-        except: pass
-
-    def _on_mousewheel(self, event):
-        """Ultra-robust scroll detection using physical screen coordinates."""
-        try:
-            w = event.widget.winfo_containing(event.x_root, event.y_root)
-            if w and (str(w).startswith(str(self.canvas)) or str(w).startswith(str(self.list_inner))):
-                if event.num == 4 or event.delta > 0: self.canvas.yview_scroll(-1, "units")
-                elif event.num == 5 or event.delta < 0: self.canvas.yview_scroll(1, "units")
         except: pass
 
     def get_bulk_owners(self, paths):
@@ -518,9 +495,7 @@ class LinuxSweep:
 
     def worker_thread(self, uids):
         total_apps = len(uids)
-        current_app = 0
-        successful = []
-        failed = []
+        current_app, successful, failed = 0, [], []
 
         for uid in uids:
             if self.is_cancelled: break
@@ -561,8 +536,7 @@ class LinuxSweep:
         self.log_queue.put({"type": "done", "failed": failed})
 
 def global_handler(etype, value, tb):
-    err_msg = "".join(traceback.format_exception(etype, value, tb))
-    print(err_msg)
+    print("".join(traceback.format_exception(etype, value, tb)))
 
 if __name__ == "__main__":
     root = tk.Tk()
