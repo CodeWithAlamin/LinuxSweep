@@ -29,6 +29,7 @@ detect_pm() {
 PM_TYPE=$(detect_pm)
 
 # ----------- 3. GRANULAR DEPENDENCY CHECK -----------
+# Removed Pillow/Imaging requirements as requested
 ensure_pkg() {
     local label=$1; local check_cmd=$2; local apt_pkg=$3; local dnf_pkg=$4; local pacman_pkg=$5; local zyp_pkg=$6
     if ! eval "$check_cmd" &>/dev/null; then
@@ -46,9 +47,6 @@ ensure_pkg() {
 
 ensure_pkg "Python 3" "command -v python3" "python3" "python3" "python" "python3"
 ensure_pkg "Tkinter" "python3 -c 'import tkinter'" "python3-tk" "python3-tkinter" "tk" "python3-tk"
-ensure_pkg "Pillow" "python3 -c 'from PIL import Image, ImageTk'" \
-           "python3-pil python3-pil.imagetk" "python3-pillow python3-pillow-tk" \
-           "python-pillow" "python3-Pillow python3-Pillow-tk"
 
 # ----------- 4. THE PYTHON ENGINE -----------
 PY_FILE="/tmp/linux_sweep_engine.py"
@@ -56,7 +54,6 @@ PY_FILE="/tmp/linux_sweep_engine.py"
 cat << 'EOF' > "$PY_FILE"
 import os, sys, json, subprocess, tkinter as tk
 from tkinter import ttk, messagebox, filedialog
-from PIL import Image, ImageTk
 import threading, queue, pwd, signal
 
 # Core system protections
@@ -113,42 +110,41 @@ class LogWindow(tk.Toplevel):
         self.text_area.configure(yscrollcommand=self.scrollbar.set)
         self.text_area.pack(side="left", fill="both", expand=True); self.scrollbar.pack(side="right", fill="y")
 
-        # Independent Scroll for Log Window
-        self.text_area.bind("<MouseWheel>", self._on_log_scroll)
-        self.text_area.bind("<Button-4>", self._on_log_scroll)
-        self.text_area.bind("<Button-5>", self._on_log_scroll)
-
         self.btn_frame = tk.Frame(self, bg=COLOR_BG, pady=20)
         self.btn_frame.pack(fill="x")
         btn_cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 25, "pady": 8, "cursor": "hand2"}
         
-        # Instant Cancel (No Popup)
         self.cancel_btn = tk.Button(self.btn_frame, text="CANCEL", command=self.do_instant_cancel, bg=COLOR_DANGER, **btn_cfg)
         self.cancel_btn.pack(side="left", padx=(180, 10))
         self.close_btn = tk.Button(self.btn_frame, text="CLOSE", command=self.destroy, state="disabled", bg="#cccccc", **btn_cfg)
         self.close_btn.pack(side="left", padx=10)
 
-    def _on_log_scroll(self, event):
-        if event.num == 4 or event.delta > 0: self.text_area.yview_scroll(-1, "units")
-        elif event.num == 5 or event.delta < 0: self.text_area.yview_scroll(1, "units")
-        return "break"
-
-    def log(self, msg): self.text_area.insert(tk.END, msg); self.text_area.see(tk.END)
+    def log(self, msg): 
+        try:
+            self.text_area.insert(tk.END, msg)
+            self.text_area.see(tk.END)
+        except tk.TclError: pass
 
     def do_instant_cancel(self):
         self.cancel_callback()
         self.log("\n🛑 PROCESS TERMINATED INSTANTLY\n")
         self.cancel_btn.config(state="disabled", bg="#cccccc")
 
-    def finalize(self):
-        self.finished = True; self.progress.stop(); self.progress.config(mode='determinate', value=100)
-        self.label.config(text="✔ DONE: System Cleaned", fg=COLOR_IMPORT)
-        self.cancel_btn.config(state="disabled", bg="#cccccc")
-        self.close_btn.config(state="normal", bg=COLOR_EXPORT)
+    def finalize(self, cancelled=False):
+        self.finished = True
+        try:
+            self.progress.stop()
+            self.progress.config(mode='determinate', value=100)
+            status_text = "⚠ PROCESS CANCELLED" if cancelled else "✔ DONE: System Cleaned"
+            status_color = COLOR_DANGER if cancelled else COLOR_IMPORT
+            self.label.config(text=status_text, fg=status_color)
+            self.cancel_btn.config(state="disabled", bg="#cccccc")
+            self.close_btn.config(state="normal", bg=COLOR_EXPORT)
+        except tk.TclError: pass
 
     def on_attempt_close(self):
         if self.finished: self.destroy()
-        else: messagebox.showwarning("Busy", "Process running. Use Cancel to stop.")
+        else: self.do_instant_cancel()
 
 class LinuxSweep:
     def __init__(self, root, pm_type):
@@ -157,10 +153,11 @@ class LinuxSweep:
         self.root.title(f"LinuxSweep - {self.pm_type}")
         self.root.geometry("1000x800")
         self.root.configure(bg=COLOR_BG)
-        self.icon_cache, self.app_data_map, self.selection_vars, self.row_data = {}, {}, {}, {}
+        self.app_data_map, self.selection_vars, self.row_data = {}, {}, {}
         self.log_queue = queue.Queue()
         self.current_proc = None
         self.is_cancelled = False
+        self.lw = None
         self.setup_ui()
         self.refresh_app_list()
         self.check_queue()
@@ -171,6 +168,7 @@ class LinuxSweep:
         btn_cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 18, "pady": 6, "cursor": "hand2"}
         tk.Button(top, text="Import Preset", bg=COLOR_IMPORT, command=self.import_preset, **btn_cfg).pack(side="left", padx=5)
         tk.Button(top, text="Export Preset", bg=COLOR_EXPORT, command=self.export_preset, **btn_cfg).pack(side="left", padx=5)
+        
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *a: self.refresh_display())
         search_unit = tk.Frame(top, bg=COLOR_BG, highlightthickness=1, highlightbackground=COLOR_BORDER)
@@ -179,6 +177,7 @@ class LinuxSweep:
         self.search_entry.pack(side="left", fill="x", expand=True, padx=(10, 5), ipady=5)
         tk.Frame(search_unit, width=1, bg=COLOR_BORDER).pack(side="left", fill="y")
         tk.Button(search_unit, text="✕", font=("Arial", 10, "bold"), relief="flat", bg=COLOR_BG, fg="gray", width=4, command=lambda: self.search_var.set("")).pack(side="right")
+        
         self.container = tk.Frame(self.root, bg=COLOR_BG); self.container.pack(fill="both", expand=True, padx=25)
         self.canvas = tk.Canvas(self.container, highlightthickness=0, bg=COLOR_BG)
         self.scrollbar = ttk.Scrollbar(self.container, orient="vertical", command=self.canvas.yview)
@@ -189,7 +188,6 @@ class LinuxSweep:
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True); self.scrollbar.pack(side="right", fill="y")
         
-        # Territory-Aware Scrolling
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
         self.canvas.bind_all("<Button-4>", self._on_mousewheel)
         self.canvas.bind_all("<Button-5>", self._on_mousewheel)
@@ -198,26 +196,13 @@ class LinuxSweep:
         self.status_lbl = tk.Label(footer, text="0 apps selected", bg=COLOR_BG, fg="gray", font=("Arial", 10))
         self.status_lbl.pack(side="left")
         
-        # New "Exit" and Improved Naming
         tk.Button(footer, text="EXIT", bg=COLOR_EXPORT, command=self.root.destroy, **btn_cfg).pack(side="right", padx=(10, 0))
         tk.Button(footer, text="UNINSTALL", bg=COLOR_DANGER, command=self.show_confirm, **btn_cfg).pack(side="right")
 
     def _on_mousewheel(self, event):
-        """Only scrolls main list if mouse is over it"""
         if str(event.widget).startswith(str(self.canvas)) or str(event.widget).startswith(str(self.list_inner)):
             if event.num == 4 or event.delta > 0: self.canvas.yview_scroll(-1, "units")
             elif event.num == 5 or event.delta < 0: self.canvas.yview_scroll(1, "units")
-
-    def find_icon(self, name):
-        if not name: return None
-        if os.path.isabs(name) and os.path.exists(name): return name
-        paths = ["/usr/share/icons/hicolor/48x48/apps", "/usr/share/pixmaps", "/usr/share/icons/Adwaita/48x48/apps", "/var/lib/flatpak/exports/share/icons/hicolor/48x48/apps", "/var/lib/snapd/desktop/icons"]
-        for r in paths:
-            if not os.path.exists(r): continue
-            for e in [".png", ".svg", ".xpm"]:
-                fp = os.path.join(r, f"{name}{e}")
-                if os.path.exists(fp): return fp
-        return None
 
     def get_bulk_owners(self, paths):
         owners = {}
@@ -249,22 +234,21 @@ class LinuxSweep:
         for path in all_files:
             pkg_id = owners.get(path) or os.path.basename(path).replace(".desktop", "")
             try:
-                name, icon = "", ""
+                name = ""
                 with open(path, 'r', errors='ignore') as f:
                     for l in f:
-                        if l.startswith("Name="): name = l.split("=")[1].strip()
-                        if l.startswith("Icon="): icon = l.split("=")[1].strip()
+                        if l.startswith("Name="): name = l.split("=")[1].strip(); break
                 uid = f"{pkg_id}_{self.pm_type}"
                 if uid not in self.app_data_map:
-                    self.app_data_map[uid] = {"name": name or pkg_id, "id": pkg_id, "icon": icon, "pm": self.pm_type}
+                    self.app_data_map[uid] = {"name": name or pkg_id, "id": pkg_id, "pm": self.pm_type}
             except: continue
         try:
-            fp_raw = subprocess.check_output(["flatpak", "list", "--columns=name,application,icon"], stderr=subprocess.DEVNULL).decode()
+            fp_raw = subprocess.check_output(["flatpak", "list", "--columns=name,application"], stderr=subprocess.DEVNULL).decode()
             for line in fp_raw.strip().split('\n'):
                 p = line.split('\t')
                 if len(p) >= 2:
                     uid = f"{p[1]}_FLATPAK"
-                    self.app_data_map[uid] = {"name": p[0], "id": p[1], "icon": p[2] if len(p)>2 else "", "pm": "FLATPAK"}
+                    self.app_data_map[uid] = {"name": p[0], "id": p[1], "pm": "FLATPAK"}
         except: pass
         try:
             snaps = subprocess.check_output(["snap", "list"], stderr=subprocess.DEVNULL).decode().splitlines()[1:]
@@ -273,7 +257,7 @@ class LinuxSweep:
                 if len(parts) >= 1:
                     sid = parts[0]
                     if sid in ["snapd", "core", "bare"]: continue
-                    uid = f"{sid}_SNAP"; self.app_data_map[uid] = {"name": sid.capitalize(), "id": sid, "icon": sid, "pm": "SNAP"}
+                    uid = f"{sid}_SNAP"; self.app_data_map[uid] = {"name": sid.capitalize(), "id": sid, "pm": "SNAP"}
         except: pass
         self.refresh_display()
 
@@ -283,20 +267,14 @@ class LinuxSweep:
         query = self.search_var.get().lower()
         for uid in sorted(self.app_data_map.keys(), key=lambda k: self.app_data_map[k]['name'].lower()):
             app = self.app_data_map[uid]
+            # Improved Search: Matches both Name and ID
             if query in app['name'].lower() or query in app['id'].lower():
                 is_p = any(p in app['id'].lower() for p in PROTECTED)
                 row = tk.Frame(self.list_inner, bg=COLOR_BG, highlightthickness=1, highlightbackground=COLOR_BORDER, padx=12, pady=0)
                 row.pack(fill="x", pady=1, padx=5)
                 var = self.selection_vars.get(uid, tk.BooleanVar()); self.selection_vars[uid] = var
                 tk.Label(row, text="▣" if var.get() else "□", font=("Arial", 16), bg=COLOR_BG, fg=COLOR_ACCENT if var.get() else COLOR_BORDER, width=2).pack(side="left")
-                icon_path = self.find_icon(app['icon'])
-                if icon_path:
-                    try:
-                        img = Image.open(icon_path).resize((22, 22), Image.Resampling.LANCZOS)
-                        self.icon_cache[icon_path] = ImageTk.PhotoImage(img)
-                        tk.Label(row, image=self.icon_cache[icon_path], bg=COLOR_BG).pack(side="left", padx=10)
-                    except: pass
-                tk.Label(row, text=f"{app['name']} ({app['id']})", fg="red" if is_p else COLOR_TEXT, bg=COLOR_BG, font=("Arial", 9)).pack(side="left")
+                tk.Label(row, text=f"{app['name']} ({app['id']})", fg="red" if is_p else COLOR_TEXT, bg=COLOR_BG, font=("Arial", 9)).pack(side="left", padx=10)
                 pm_lbl = tk.Label(row, text=f"[{app['pm']}]", fg=COLOR_ACCENT if app['pm'] != "SNAP" else "#FF9800", bg=COLOR_BG, font=("Arial", 7, "bold"))
                 pm_lbl.pack(side="right", padx=15)
                 self.row_data[uid] = row
@@ -306,6 +284,7 @@ class LinuxSweep:
                 if var.get(): self.update_row_ui(uid)
 
     def update_row_ui(self, uid):
+        if uid not in self.row_data: return
         sel = self.selection_vars[uid].get(); color = COLOR_SELECTED if sel else COLOR_BG
         self.row_data[uid].config(bg=color)
         for w in self.row_data[uid].winfo_children():
@@ -330,25 +309,29 @@ class LinuxSweep:
     def import_preset(self):
         p = filedialog.askopenfilename(initialdir=USER_HOME, filetypes=[("JSON", "*.json")])
         if not p: return
-        with open(p, 'r') as f: imp = json.load(f)
-        count = 0
-        for uid, app in self.app_data_map.items():
-            if app['id'] in imp: self.selection_vars[uid].set(True); count += 1; self.update_row_ui(uid)
-        messagebox.showinfo("Success", f"Imported {count} apps.")
+        try:
+            with open(p, 'r') as f: imp = json.load(f)
+            count = 0
+            for uid, app in self.app_data_map.items():
+                if app['id'] in imp: self.selection_vars[uid].set(True); count += 1; self.update_row_ui(uid)
+            messagebox.showinfo("Success", f"Imported {count} apps.")
+        except: pass
 
     def abort_uninstall(self):
-        """Kills process group immediately"""
         self.is_cancelled = True
         if self.current_proc:
             try: os.killpg(os.getpgid(self.current_proc.pid), signal.SIGTERM)
-            except: self.current_proc.terminate()
+            except: pass
 
     def check_queue(self):
         try:
             while True:
                 msg = self.log_queue.get_nowait()
-                if msg == "DONE": self.lw.finalize(); self.refresh_app_list()
-                else: self.lw.log(msg)
+                if msg == "DONE":
+                    if self.lw: self.lw.finalize(cancelled=self.is_cancelled)
+                    self.refresh_app_list()
+                else:
+                    if self.lw: self.lw.log(msg)
         except queue.Empty: pass
         self.root.after(100, self.check_queue)
 
@@ -364,6 +347,7 @@ class LinuxSweep:
     def worker_thread(self, uids):
         native, flatpak, snap = [], [], []
         for uid in uids:
+            if uid not in self.app_data_map: continue
             app = self.app_data_map[uid]
             if app['pm'] == "FLATPAK": flatpak.append(app['id'])
             elif app['pm'] == "SNAP": snap.append(app['id'])
@@ -371,11 +355,14 @@ class LinuxSweep:
 
         def run_proc(cmd):
             if self.is_cancelled: return
-            self.current_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, preexec_fn=os.setsid)
-            for l in self.current_proc.stdout:
-                if self.is_cancelled: break
-                self.log_queue.put(l)
-            self.current_proc.wait(); self.current_proc = None
+            try:
+                self.current_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, preexec_fn=os.setsid)
+                for l in self.current_proc.stdout:
+                    if self.is_cancelled: break
+                    self.log_queue.put(l)
+                self.current_proc.wait()
+            except Exception as e: self.log_queue.put(f"Error: {str(e)}\n")
+            finally: self.current_proc = None
 
         if native:
             cmd_map = {
@@ -392,6 +379,7 @@ class LinuxSweep:
                 if self.is_cancelled: break
                 self.log_queue.put(f"Surgically removing snap: {s}...\n")
                 run_proc(["snap", "remove", "--purge", s])
+        
         self.log_queue.put("DONE")
 
 if __name__ == "__main__":
