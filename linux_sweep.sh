@@ -85,7 +85,6 @@ HISTORY_FILE = os.path.join(HISTORY_DIR, "uninstalled_history.json")
 
 # --- 1. MODERN UNIFIED DIALOG SYSTEM ---
 class ModernAlert(tk.Toplevel):
-    """Replaces ugly default Tkinter messageboxes with a clean, flat, modern UI."""
     def __init__(self, parent, title, msg, alert_type="info", callback=None):
         super().__init__(parent)
         self.title(title)
@@ -152,10 +151,12 @@ class LogWindow(tk.Toplevel):
 
     def _on_log_scroll(self, event):
         try:
-            if event.num == 4 or event.delta > 0: self.text_area.yview_scroll(-1, "units")
-            elif event.num == 5 or event.delta < 0: self.text_area.yview_scroll(1, "units")
+            w = event.widget.winfo_containing(event.x_root, event.y_root)
+            if w and str(w).startswith(str(self.text_area)):
+                if event.num == 4 or event.delta > 0: self.text_area.yview_scroll(-1, "units")
+                elif event.num == 5 or event.delta < 0: self.text_area.yview_scroll(1, "units")
+                return "break"
         except: pass
-        return "break"
 
     def log(self, msg): 
         try: self.text_area.insert(tk.END, msg); self.text_area.see(tk.END)
@@ -198,7 +199,7 @@ class LogWindow(tk.Toplevel):
 class HistorySelectionWindow(tk.Toplevel):
     def __init__(self, parent, history_list):
         super().__init__(parent)
-        self.title("Export History")
+        self.title("Export History Preset")
         self.geometry("600x500")
         self.configure(bg=COLOR_BG)
         self.transient(parent); self.grab_set()
@@ -220,7 +221,6 @@ class HistorySelectionWindow(tk.Toplevel):
         self.canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
         self.scroll_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         
-        # Dedicated Scroll Binding for History UI
         self.canvas.bind_all("<MouseWheel>", self._on_scroll)
         self.canvas.bind_all("<Button-4>", self._on_scroll)
         self.canvas.bind_all("<Button-5>", self._on_scroll)
@@ -228,11 +228,13 @@ class HistorySelectionWindow(tk.Toplevel):
         btn_f = tk.Frame(self, bg=COLOR_BG, pady=15); btn_f.pack(fill="x")
         cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 20, "pady": 8, "cursor": "hand2"}
         tk.Button(btn_f, text="CANCEL", bg=COLOR_EXPORT, command=self.destroy, **cfg).pack(side="left", padx=(150, 10))
-        tk.Button(btn_f, text="EXPORT", bg=COLOR_IMPORT, command=self.export, **cfg).pack(side="left")
+        tk.Button(btn_f, text="EXPORT PRESET", bg=COLOR_IMPORT, command=self.export, **cfg).pack(side="left")
 
     def _on_scroll(self, event):
         try:
-            if self.winfo_exists() and (str(event.widget).startswith(str(self.canvas)) or str(event.widget).startswith(str(self.scroll_frame))):
+            if not self.winfo_exists(): return
+            w = event.widget.winfo_containing(event.x_root, event.y_root)
+            if w and (str(w).startswith(str(self.canvas)) or str(w).startswith(str(self.scroll_frame))):
                 if event.num == 4 or event.delta > 0: self.canvas.yview_scroll(-1, "units")
                 elif event.num == 5 or event.delta < 0: self.canvas.yview_scroll(1, "units")
         except: pass
@@ -243,13 +245,11 @@ class HistorySelectionWindow(tk.Toplevel):
             if not selected:
                 ModernAlert(self, "Warning", "No apps selected.", "error")
                 return
-            # FIXED Z-ORDER: Setting parent=self ensures dialog stays on top
             p = filedialog.asksaveasfilename(parent=self, initialdir=USER_HOME, defaultextension=".json", filetypes=[("JSON", "*.json")])
             if p:
                 with open(p, 'w') as f: json.dump(selected, f, indent=4)
                 ModernAlert(self, "Success", f"Exported {len(selected)} apps.", "info", self.destroy)
-        except Exception as e:
-            ModernAlert(self, "Error", f"Failed to export: {str(e)}", "error")
+        except Exception as e: ModernAlert(self, "Error", f"Failed to export: {str(e)}", "error")
 
 # --- 4. MAIN ENGINE ---
 class LinuxSweep:
@@ -269,20 +269,28 @@ class LinuxSweep:
     def setup_ui(self):
         style = ttk.Style(); style.theme_use('clam')
         top = tk.Frame(self.root, bg=COLOR_BG, padx=25, pady=20); top.pack(fill="x")
-        btn_cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 18, "pady": 6, "cursor": "hand2"}
+        btn_cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 15, "pady": 6, "cursor": "hand2"}
         
-        # Clean Naming
-        tk.Button(top, text="Import", bg=COLOR_IMPORT, command=self.import_preset, **btn_cfg).pack(side="left", padx=5)
-        tk.Button(top, text="Export", bg=COLOR_EXPORT, command=self.export_preset, **btn_cfg).pack(side="left", padx=5)
-        tk.Button(top, text="History", bg=COLOR_ACCENT, command=self.export_history, **btn_cfg).pack(side="left", padx=5)
-        tk.Button(top, text="Merge", bg="#9c27b0", command=self.merge_presets, **btn_cfg).pack(side="left", padx=5)
+        # MEANINGFUL BUTTON NAMES
+        tk.Button(top, text="Import Preset", bg=COLOR_IMPORT, command=self.import_preset, **btn_cfg).pack(side="left", padx=4)
+        tk.Button(top, text="Export Preset", bg=COLOR_EXPORT, command=self.export_preset, **btn_cfg).pack(side="left", padx=4)
+        tk.Button(top, text="Export History", bg=COLOR_ACCENT, command=self.export_history, **btn_cfg).pack(side="left", padx=4)
+        tk.Button(top, text="Merge Presets", bg="#9c27b0", command=self.merge_presets, **btn_cfg).pack(side="left", padx=4)
         
+        # MODERN, OVERHAULED SEARCH BAR
         self.search_var = tk.StringVar(); self.search_var.trace_add("write", lambda *a: self.refresh_display())
         search_unit = tk.Frame(top, bg=COLOR_BG, highlightthickness=1, highlightbackground=COLOR_BORDER)
-        search_unit.pack(side="left", fill="x", expand=True, padx=(20, 5))
-        self.search_entry = tk.Entry(search_unit, textvariable=self.search_var, font=("Arial", 11), relief="flat", bg=COLOR_BG, borderwidth=0)
-        self.search_entry.pack(side="left", fill="x", expand=True, padx=(10, 5), ipady=5)
-        tk.Button(search_unit, text="✕", font=("Arial", 10, "bold"), relief="flat", bg=COLOR_BG, width=4, command=lambda: self.search_var.set("")).pack(side="right")
+        search_unit.pack(side="left", fill="x", expand=True, padx=(15, 0))
+        
+        self.search_entry = tk.Entry(search_unit, textvariable=self.search_var, font=("Arial", 11), relief="flat", bg=COLOR_BG, borderwidth=0, highlightthickness=0)
+        self.search_entry.pack(side="left", fill="x", expand=True, padx=10, pady=7)
+        
+        # Paste Bug Fix
+        self.search_entry.bind("<Control-v>", self._custom_paste)
+        self.search_entry.bind("<Shift-Insert>", self._custom_paste)
+        
+        clear_btn = tk.Button(search_unit, text="✕", font=("Arial", 11, "bold"), relief="flat", bg=COLOR_BG, fg="#999999", activebackground=COLOR_BG, activeforeground=COLOR_DANGER, borderwidth=0, highlightthickness=0, cursor="hand2", command=lambda: self.search_var.set(""))
+        clear_btn.pack(side="right", padx=(0, 10))
         
         self.container = tk.Frame(self.root, bg=COLOR_BG); self.container.pack(fill="both", expand=True, padx=25)
         self.canvas = tk.Canvas(self.container, highlightthickness=0, bg=COLOR_BG)
@@ -301,12 +309,24 @@ class LinuxSweep:
         footer = tk.Frame(self.root, bg=COLOR_BG, padx=25, pady=20); footer.pack(fill="x")
         self.status_lbl = tk.Label(footer, text="0 apps selected", bg=COLOR_BG, fg="gray", font=("Arial", 10, "bold"))
         self.status_lbl.pack(side="left")
-        tk.Button(footer, text="EXIT", bg=COLOR_EXPORT, command=self.root.destroy, **btn_cfg).pack(side="right", padx=(10, 0))
-        tk.Button(footer, text="UNINSTALL", bg=COLOR_DANGER, command=self.show_confirm, **btn_cfg).pack(side="right")
+        
+        tk.Button(footer, text="Exit App", bg=COLOR_EXPORT, command=self.root.destroy, **btn_cfg).pack(side="right", padx=(10, 0))
+        tk.Button(footer, text="Uninstall Selected", bg=COLOR_DANGER, command=self.show_confirm, **btn_cfg).pack(side="right")
+
+    def _custom_paste(self, event):
+        """Fixes standard Tkinter behavior so pasting over highlighted text deletes it first."""
+        try:
+            if self.search_entry.select_present():
+                self.search_entry.delete(tk.SEL_FIRST, tk.SEL_LAST)
+            self.search_entry.insert(tk.INSERT, self.root.clipboard_get())
+            return "break"
+        except: pass
 
     def _on_mousewheel(self, event):
+        """Ultra-robust scroll detection using physical screen coordinates."""
         try:
-            if self.root.winfo_exists() and (str(event.widget).startswith(str(self.canvas)) or str(event.widget).startswith(str(self.list_inner))):
+            w = event.widget.winfo_containing(event.x_root, event.y_root)
+            if w and (str(w).startswith(str(self.canvas)) or str(w).startswith(str(self.list_inner))):
                 if event.num == 4 or event.delta > 0: self.canvas.yview_scroll(-1, "units")
                 elif event.num == 5 or event.delta < 0: self.canvas.yview_scroll(1, "units")
         except: pass
@@ -486,7 +506,7 @@ class LinuxSweep:
     def show_confirm(self):
         try:
             sel = [uid for uid, v in self.selection_vars.items() if v.get()]
-            if sel: ModernAlert(self.root, "Confirm", f"Uninstall {len(sel)} items?", "ask", lambda: self.start_uninstall(sel))
+            if sel: ModernAlert(self.root, "Confirm Purge", f"Uninstall {len(sel)} items and all their related components?", "ask", lambda: self.start_uninstall(sel))
         except: pass
 
     def start_uninstall(self, uids):
