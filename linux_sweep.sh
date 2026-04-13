@@ -63,9 +63,10 @@ PY_FILE="/tmp/linux_sweep_engine.py"
 
 cat << 'EOF' > "$PY_FILE"
 import os, sys, json, subprocess, tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, filedialog
 import threading, queue, pwd, signal, traceback
 
+# Configuration
 PROTECTED = ["python3", "python", "pkexec", "tkinter", "niri", "snapd", "flatpak", "bash", "sudo"]
 COLOR_BG, COLOR_HOVER, COLOR_SELECTED = "#ffffff", "#f8f9fa", "#e7f3ff"
 COLOR_BORDER, COLOR_TEXT, COLOR_ACCENT = "#e0e0e0", "#333333", "#1976d2"
@@ -82,38 +83,51 @@ USER_HOME = get_user_home()
 HISTORY_DIR = os.path.join(USER_HOME, ".config", "linux_sweep")
 HISTORY_FILE = os.path.join(HISTORY_DIR, "uninstalled_history.json")
 
-class CustomConfirm(tk.Toplevel):
-    def __init__(self, parent, count, callback):
+# --- 1. MODERN UNIFIED DIALOG SYSTEM ---
+class ModernAlert(tk.Toplevel):
+    """Replaces ugly default Tkinter messageboxes with a clean, flat, modern UI."""
+    def __init__(self, parent, title, msg, alert_type="info", callback=None):
         super().__init__(parent)
-        self.title("Confirm Removal")
-        self.geometry("450x280")
+        self.title(title)
+        self.geometry("450x220")
         self.configure(bg=COLOR_BG)
         self.resizable(False, False)
         self.transient(parent); self.grab_set()
         self.callback = callback
-        f = tk.Frame(self, bg=COLOR_BG); f.pack(expand=True)
-        tk.Label(f, text="⚠ Confirm Purge", font=("Arial", 14, "bold"), bg=COLOR_BG, fg=COLOR_DANGER).pack(pady=(0, 15))
-        tk.Label(f, text=f"Uninstall {count} apps and all related components?", font=("Arial", 11), bg=COLOR_BG, fg=COLOR_TEXT).pack(pady=10)
-        btn_f = tk.Frame(f, bg=COLOR_BG, pady=20); btn_f.pack()
-        cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 25, "pady": 8, "cursor": "hand2"}
-        tk.Button(btn_f, text="CANCEL", bg=COLOR_EXPORT, command=self.destroy, **cfg).pack(side="left", padx=10)
-        tk.Button(btn_f, text="UNINSTALL", bg=COLOR_DANGER, command=self.confirm, **cfg).pack(side="left", padx=10)
-    def confirm(self): self.destroy(); self.callback()
+        
+        f = tk.Frame(self, bg=COLOR_BG)
+        f.pack(expand=True, fill="both", padx=20, pady=20)
+        
+        color = COLOR_DANGER if alert_type == "error" else COLOR_ACCENT if alert_type == "info" else COLOR_TEXT
+        tk.Label(f, text=title, font=("Arial", 13, "bold"), bg=COLOR_BG, fg=color).pack(pady=(0, 10))
+        tk.Label(f, text=msg, font=("Arial", 10), bg=COLOR_BG, fg=COLOR_TEXT, wraplength=400, justify="center").pack(pady=10)
+        
+        btn_f = tk.Frame(f, bg=COLOR_BG); btn_f.pack(pady=10)
+        cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 25, "pady": 6, "cursor": "hand2"}
+        
+        if alert_type == "ask":
+            tk.Button(btn_f, text="CANCEL", bg=COLOR_EXPORT, command=self.destroy, **cfg).pack(side="left", padx=10)
+            tk.Button(btn_f, text="CONFIRM", bg=COLOR_DANGER, command=self.confirm, **cfg).pack(side="left", padx=10)
+        else:
+            tk.Button(btn_f, text="OK", bg=COLOR_IMPORT, command=self.destroy, **cfg).pack()
 
+    def confirm(self):
+        self.destroy()
+        if self.callback: self.callback()
+
+# --- 2. LOG WINDOW ---
 class LogWindow(tk.Toplevel):
     def __init__(self, parent, cancel_callback):
         super().__init__(parent)
-        self.title("LinuxSweep Logs")
+        self.title("Process Log")
         self.geometry("750x650")
         self.configure(bg=COLOR_BG)
         self.protocol("WM_DELETE_WINDOW", self.on_attempt_close)
         self.cancel_callback = cancel_callback
         self.finished = False
 
-        self.label = tk.Label(self, text="Preparing to Purge...", font=("Arial", 12, "bold"), bg=COLOR_BG, fg=COLOR_TEXT, pady=20)
+        self.label = tk.Label(self, text="Preparing...", font=("Arial", 12, "bold"), bg=COLOR_BG, fg=COLOR_TEXT, pady=20)
         self.label.pack()
-        
-        # New Determinate Progress Bar
         self.progress = ttk.Progressbar(self, mode='determinate', length=650)
         self.progress.pack(pady=5, padx=30)
         self.last_total = 100 
@@ -137,20 +151,22 @@ class LogWindow(tk.Toplevel):
         self.close_btn.pack(side="left", padx=10)
 
     def _on_log_scroll(self, event):
-        if event.num == 4 or event.delta > 0: self.text_area.yview_scroll(-1, "units")
-        elif event.num == 5 or event.delta < 0: self.text_area.yview_scroll(1, "units")
+        try:
+            if event.num == 4 or event.delta > 0: self.text_area.yview_scroll(-1, "units")
+            elif event.num == 5 or event.delta < 0: self.text_area.yview_scroll(1, "units")
+        except: pass
         return "break"
 
     def log(self, msg): 
         try: self.text_area.insert(tk.END, msg); self.text_area.see(tk.END)
-        except tk.TclError: pass
+        except: pass
 
     def update_progress(self, current, total, name):
         try:
             self.last_total = total
             self.progress.config(maximum=total, value=current)
             self.label.config(text=f"Purging {current} of {total}: {name}...")
-        except tk.TclError: pass
+        except: pass
 
     def do_instant_cancel(self):
         try:
@@ -163,61 +179,79 @@ class LogWindow(tk.Toplevel):
         self.finished = True
         try:
             self.progress.config(value=self.last_total)
-            if cancelled:
-                status, fg_color = "⚠ PROCESS CANCELLED", COLOR_DANGER
+            if cancelled: status, fg_color = "⚠ CANCELLED", COLOR_DANGER
             elif failed_list:
-                status, fg_color = f"⚠ COMPLETED WITH {len(failed_list)} ERRORS", "#FF9800"
-                self.log("\n\n" + "="*40 + "\n")
-                self.log("⚠️ SUMMARY OF FAILED UNINSTALLS ⚠️\n")
-                self.log("="*40 + "\n")
+                status, fg_color = f"⚠ COMPLETED WITH ERRORS", "#FF9800"
+                self.log("\n\n" + "="*40 + "\n⚠️ SUMMARY OF FAILED UNINSTALLS ⚠️\n" + "="*40 + "\n")
                 for f in failed_list: self.log(f"- {f}\n")
-            else:
-                status, fg_color = "✔ DONE: System Swept Clean", COLOR_IMPORT
-                
+            else: status, fg_color = "✔ DONE", COLOR_IMPORT
             self.label.config(text=status, fg=fg_color)
             self.cancel_btn.config(state="disabled", bg="#cccccc")
             self.close_btn.config(state="normal", bg=COLOR_EXPORT)
-        except tk.TclError: pass
+        except: pass
 
     def on_attempt_close(self):
         if self.finished: self.destroy()
         else: self.do_instant_cancel()
 
+# --- 3. HISTORY SELECTOR WINDOW ---
 class HistorySelectionWindow(tk.Toplevel):
     def __init__(self, parent, history_list):
         super().__init__(parent)
-        self.title("Select History to Export")
+        self.title("Export History")
         self.geometry("600x500")
         self.configure(bg=COLOR_BG)
         self.transient(parent); self.grab_set()
         tk.Label(self, text="Deselect apps to exclude from preset:", bg=COLOR_BG, font=("Arial", 10, "bold"), pady=10).pack()
+        
         self.vars = {}
-        container = tk.Frame(self, bg=COLOR_BG)
-        container.pack(fill="both", expand=True, padx=20, pady=10)
-        canvas = tk.Canvas(container, highlightthickness=0, bg=COLOR_BG)
-        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
-        scroll_frame = tk.Frame(canvas, bg=COLOR_BG)
-        canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        container = tk.Frame(self, bg=COLOR_BG); container.pack(fill="both", expand=True, padx=20, pady=10)
+        self.canvas = tk.Canvas(container, highlightthickness=0, bg=COLOR_BG)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=self.canvas.yview)
+        self.scroll_frame = tk.Frame(self.canvas, bg=COLOR_BG)
+        self.canvas.create_window((0, 0), window=self.scroll_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        
         for item in sorted(history_list):
             var = tk.BooleanVar(value=True); self.vars[item] = var
-            f = tk.Frame(scroll_frame, bg=COLOR_BG); f.pack(fill="x", pady=2)
+            f = tk.Frame(self.scroll_frame, bg=COLOR_BG); f.pack(fill="x", pady=2)
             tk.Checkbutton(f, text=item, variable=var, bg=COLOR_BG).pack(side="left")
-        canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
-        scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+            
+        self.canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
+        self.scroll_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        
+        # Dedicated Scroll Binding for History UI
+        self.canvas.bind_all("<MouseWheel>", self._on_scroll)
+        self.canvas.bind_all("<Button-4>", self._on_scroll)
+        self.canvas.bind_all("<Button-5>", self._on_scroll)
+
         btn_f = tk.Frame(self, bg=COLOR_BG, pady=15); btn_f.pack(fill="x")
-        cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 20, "pady": 8}
+        cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 20, "pady": 8, "cursor": "hand2"}
         tk.Button(btn_f, text="CANCEL", bg=COLOR_EXPORT, command=self.destroy, **cfg).pack(side="left", padx=(150, 10))
-        tk.Button(btn_f, text="EXPORT SELECTED", bg=COLOR_IMPORT, command=self.export, **cfg).pack(side="left")
+        tk.Button(btn_f, text="EXPORT", bg=COLOR_IMPORT, command=self.export, **cfg).pack(side="left")
+
+    def _on_scroll(self, event):
+        try:
+            if self.winfo_exists() and (str(event.widget).startswith(str(self.canvas)) or str(event.widget).startswith(str(self.scroll_frame))):
+                if event.num == 4 or event.delta > 0: self.canvas.yview_scroll(-1, "units")
+                elif event.num == 5 or event.delta < 0: self.canvas.yview_scroll(1, "units")
+        except: pass
 
     def export(self):
-        selected = [n for n, v in self.vars.items() if v.get()]
-        if not selected: return
-        p = filedialog.asksaveasfilename(initialdir=USER_HOME, defaultextension=".json")
-        if p:
-            with open(p, 'w') as f: json.dump(selected, f, indent=4)
-            self.destroy()
+        try:
+            selected = [n for n, v in self.vars.items() if v.get()]
+            if not selected:
+                ModernAlert(self, "Warning", "No apps selected.", "error")
+                return
+            # FIXED Z-ORDER: Setting parent=self ensures dialog stays on top
+            p = filedialog.asksaveasfilename(parent=self, initialdir=USER_HOME, defaultextension=".json", filetypes=[("JSON", "*.json")])
+            if p:
+                with open(p, 'w') as f: json.dump(selected, f, indent=4)
+                ModernAlert(self, "Success", f"Exported {len(selected)} apps.", "info", self.destroy)
+        except Exception as e:
+            ModernAlert(self, "Error", f"Failed to export: {str(e)}", "error")
 
+# --- 4. MAIN ENGINE ---
 class LinuxSweep:
     def __init__(self, root, pm_type):
         self.root = root
@@ -235,17 +269,21 @@ class LinuxSweep:
     def setup_ui(self):
         style = ttk.Style(); style.theme_use('clam')
         top = tk.Frame(self.root, bg=COLOR_BG, padx=25, pady=20); top.pack(fill="x")
-        btn_cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 18, "pady": 6}
-        tk.Button(top, text="Import Preset", bg=COLOR_IMPORT, command=self.import_preset, **btn_cfg).pack(side="left", padx=5)
-        tk.Button(top, text="Export Preset", bg=COLOR_EXPORT, command=self.export_preset, **btn_cfg).pack(side="left", padx=5)
-        tk.Button(top, text="Export History", bg=COLOR_ACCENT, command=self.export_history_selective, **btn_cfg).pack(side="left", padx=5)
-        tk.Button(top, text="Merge Presets", bg="#9c27b0", command=self.merge_presets, **btn_cfg).pack(side="left", padx=5)
+        btn_cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 18, "pady": 6, "cursor": "hand2"}
+        
+        # Clean Naming
+        tk.Button(top, text="Import", bg=COLOR_IMPORT, command=self.import_preset, **btn_cfg).pack(side="left", padx=5)
+        tk.Button(top, text="Export", bg=COLOR_EXPORT, command=self.export_preset, **btn_cfg).pack(side="left", padx=5)
+        tk.Button(top, text="History", bg=COLOR_ACCENT, command=self.export_history, **btn_cfg).pack(side="left", padx=5)
+        tk.Button(top, text="Merge", bg="#9c27b0", command=self.merge_presets, **btn_cfg).pack(side="left", padx=5)
+        
         self.search_var = tk.StringVar(); self.search_var.trace_add("write", lambda *a: self.refresh_display())
         search_unit = tk.Frame(top, bg=COLOR_BG, highlightthickness=1, highlightbackground=COLOR_BORDER)
         search_unit.pack(side="left", fill="x", expand=True, padx=(20, 5))
         self.search_entry = tk.Entry(search_unit, textvariable=self.search_var, font=("Arial", 11), relief="flat", bg=COLOR_BG, borderwidth=0)
         self.search_entry.pack(side="left", fill="x", expand=True, padx=(10, 5), ipady=5)
         tk.Button(search_unit, text="✕", font=("Arial", 10, "bold"), relief="flat", bg=COLOR_BG, width=4, command=lambda: self.search_var.set("")).pack(side="right")
+        
         self.container = tk.Frame(self.root, bg=COLOR_BG); self.container.pack(fill="both", expand=True, padx=25)
         self.canvas = tk.Canvas(self.container, highlightthickness=0, bg=COLOR_BG)
         self.scrollbar = ttk.Scrollbar(self.container, orient="vertical", command=self.canvas.yview)
@@ -255,19 +293,23 @@ class LinuxSweep:
         self.list_inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
         self.canvas.pack(side="left", fill="both", expand=True); self.scrollbar.pack(side="right", fill="y")
+        
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
         self.canvas.bind_all("<Button-4>", self._on_mousewheel)
         self.canvas.bind_all("<Button-5>", self._on_mousewheel)
+
         footer = tk.Frame(self.root, bg=COLOR_BG, padx=25, pady=20); footer.pack(fill="x")
-        self.status_lbl = tk.Label(footer, text="0 apps selected", bg=COLOR_BG, fg="gray")
+        self.status_lbl = tk.Label(footer, text="0 apps selected", bg=COLOR_BG, fg="gray", font=("Arial", 10, "bold"))
         self.status_lbl.pack(side="left")
         tk.Button(footer, text="EXIT", bg=COLOR_EXPORT, command=self.root.destroy, **btn_cfg).pack(side="right", padx=(10, 0))
         tk.Button(footer, text="UNINSTALL", bg=COLOR_DANGER, command=self.show_confirm, **btn_cfg).pack(side="right")
 
     def _on_mousewheel(self, event):
-        if str(event.widget).startswith(str(self.canvas)) or str(event.widget).startswith(str(self.list_inner)):
-            if event.num == 4 or event.delta > 0: self.canvas.yview_scroll(-1, "units")
-            elif event.num == 5 or event.delta < 0: self.canvas.yview_scroll(1, "units")
+        try:
+            if self.root.winfo_exists() and (str(event.widget).startswith(str(self.canvas)) or str(event.widget).startswith(str(self.list_inner))):
+                if event.num == 4 or event.delta > 0: self.canvas.yview_scroll(-1, "units")
+                elif event.num == 5 or event.delta < 0: self.canvas.yview_scroll(1, "units")
+        except: pass
 
     def get_bulk_owners(self, paths):
         owners = {}
@@ -320,52 +362,68 @@ class LinuxSweep:
         except: pass
 
     def refresh_display(self):
-        for w in self.list_inner.winfo_children(): w.destroy()
-        self.row_data = {}
-        q = self.search_var.get().lower()
-        for uid in sorted(self.app_data_map.keys(), key=lambda k: self.app_data_map[k]['name'].lower()):
-            app = self.app_data_map[uid]
-            if q in app['name'].lower() or q in app['id'].lower():
-                is_p = any(p in app['id'].lower() for p in PROTECTED)
-                row = tk.Frame(self.list_inner, bg=COLOR_BG, highlightthickness=1, highlightbackground=COLOR_BORDER, padx=12)
-                row.pack(fill="x", pady=1, padx=5)
-                v = self.selection_vars.get(uid, tk.BooleanVar()); self.selection_vars[uid] = v
-                tk.Label(row, text="▣" if v.get() else "□", font=("Arial", 16), bg=COLOR_BG, fg=COLOR_ACCENT if v.get() else COLOR_BORDER, width=2).pack(side="left")
-                tk.Label(row, text=f"{app['name']} ({app['id']})", fg="red" if is_p else COLOR_TEXT, bg=COLOR_BG, font=("Arial", 9)).pack(side="left", padx=10)
-                tk.Label(row, text=f"[{app['pm']}]", fg=COLOR_ACCENT if app['pm'] != "SNAP" else "#FF9800", bg=COLOR_BG, font=("Arial", 7, "bold")).pack(side="right", padx=15)
-                self.row_data[uid] = row
-                if not is_p:
-                    for w in row.winfo_children(): w.bind("<Button-1>", lambda e, u=uid: self.toggle_app(u))
-                    row.bind("<Button-1>", lambda e, u=uid: self.toggle_app(u))
-                if v.get(): self.update_row_ui(uid)
+        try:
+            for w in self.list_inner.winfo_children(): w.destroy()
+            self.row_data = {}
+            q = self.search_var.get().lower()
+            for uid in sorted(self.app_data_map.keys(), key=lambda k: self.app_data_map[k]['name'].lower()):
+                app = self.app_data_map[uid]
+                if q in app['name'].lower() or q in app['id'].lower():
+                    is_p = any(p in app['id'].lower() for p in PROTECTED)
+                    row = tk.Frame(self.list_inner, bg=COLOR_BG, highlightthickness=1, highlightbackground=COLOR_BORDER, padx=12)
+                    row.pack(fill="x", pady=1, padx=5)
+                    v = self.selection_vars.get(uid, tk.BooleanVar()); self.selection_vars[uid] = v
+                    tk.Label(row, text="▣" if v.get() else "□", font=("Arial", 16), bg=COLOR_BG, fg=COLOR_ACCENT if v.get() else COLOR_BORDER, width=2).pack(side="left")
+                    tk.Label(row, text=f"{app['name']} ({app['id']})", fg="red" if is_p else COLOR_TEXT, bg=COLOR_BG, font=("Arial", 9)).pack(side="left", padx=10)
+                    tk.Label(row, text=f"[{app['pm']}]", fg=COLOR_ACCENT if app['pm'] != "SNAP" else "#FF9800", bg=COLOR_BG, font=("Arial", 7, "bold")).pack(side="right", padx=15)
+                    self.row_data[uid] = row
+                    if not is_p:
+                        for w in row.winfo_children(): w.bind("<Button-1>", lambda e, u=uid: self.toggle_app(u))
+                        row.bind("<Button-1>", lambda e, u=uid: self.toggle_app(u))
+                    if v.get(): self.update_row_ui(uid)
+        except: pass
 
     def update_row_ui(self, uid):
-        if uid not in self.row_data: return
-        s = self.selection_vars[uid].get(); c = COLOR_SELECTED if s else COLOR_BG
-        self.row_data[uid].config(bg=c)
-        for w in self.row_data[uid].winfo_children():
-            w.config(bg=c)
-            if isinstance(w, tk.Label) and len(w.cget("text")) <= 2: w.config(text="▣" if s else "□", fg=COLOR_ACCENT if s else COLOR_BORDER)
+        try:
+            if uid not in self.row_data: return
+            s = self.selection_vars[uid].get(); c = COLOR_SELECTED if s else COLOR_BG
+            self.row_data[uid].config(bg=c)
+            for w in self.row_data[uid].winfo_children():
+                w.config(bg=c)
+                if isinstance(w, tk.Label) and len(w.cget("text")) <= 2: w.config(text="▣" if s else "□", fg=COLOR_ACCENT if s else COLOR_BORDER)
+        except: pass
 
     def toggle_app(self, uid):
-        self.selection_vars[uid].set(not self.selection_vars[uid].get())
-        self.update_row_ui(uid); self.status_lbl.config(text=f"{sum(v.get() for v in self.selection_vars.values())} apps selected")
+        try:
+            self.selection_vars[uid].set(not self.selection_vars[uid].get())
+            self.update_row_ui(uid); self.root.focus_set()
+            count = sum(1 for v in self.selection_vars.values() if v.get())
+            self.status_lbl.config(text=f"{count} apps selected")
+        except: pass
 
     def export_preset(self):
-        ids = [self.app_data_map[uid]['id'] for uid, v in self.selection_vars.items() if v.get()]
-        if ids:
-            p = filedialog.asksaveasfilename(initialdir=USER_HOME, defaultextension=".json")
+        try:
+            ids = [self.app_data_map[uid]['id'] for uid, v in self.selection_vars.items() if v.get()]
+            if not ids:
+                ModernAlert(self.root, "Notice", "No applications selected.", "info")
+                return
+            p = filedialog.asksaveasfilename(parent=self.root, initialdir=USER_HOME, defaultextension=".json", filetypes=[("JSON", "*.json")])
             if p:
                 with open(p, 'w') as f: json.dump(ids, f, indent=4)
+                ModernAlert(self.root, "Success", f"Exported {len(ids)} apps.", "info")
+        except Exception as e: ModernAlert(self.root, "Error", str(e), "error")
 
     def import_preset(self):
-        p = filedialog.askopenfilename(initialdir=USER_HOME)
-        if p:
-            try:
+        try:
+            p = filedialog.askopenfilename(parent=self.root, initialdir=USER_HOME, filetypes=[("JSON", "*.json")])
+            if p:
                 with open(p, 'r') as f: imp = json.load(f)
+                c = 0
                 for uid, app in self.app_data_map.items():
-                    if app['id'] in imp: self.selection_vars[uid].set(True); self.update_row_ui(uid)
-            except: pass
+                    if app['id'] in imp: self.selection_vars[uid].set(True); c += 1; self.update_row_ui(uid)
+                self.status_lbl.config(text=f"{sum(1 for v in self.selection_vars.values() if v.get())} apps selected")
+                ModernAlert(self.root, "Success", f"Imported {c} matching apps.", "info")
+        except Exception as e: ModernAlert(self.root, "Error", str(e), "error")
 
     def save_to_history(self, ids):
         if not ids: return
@@ -378,26 +436,31 @@ class LinuxSweep:
             with open(HISTORY_FILE, 'w') as f: json.dump(h, f, indent=4)
         except: pass
 
-    def export_history_selective(self):
-        if not os.path.exists(HISTORY_FILE): return
+    def export_history(self):
         try:
+            if not os.path.exists(HISTORY_FILE):
+                ModernAlert(self.root, "Notice", "No history found.", "info")
+                return
             with open(HISTORY_FILE, 'r') as f: history = json.load(f)
             HistorySelectionWindow(self.root, history)
-        except: pass
+        except Exception as e: ModernAlert(self.root, "Error", str(e), "error")
 
     def merge_presets(self):
-        files = filedialog.askopenfilenames(initialdir=USER_HOME, title="Select Presets", filetypes=[("JSON", "*.json")])
-        if not files: return
-        merged = set()
-        for f in files:
-            try:
-                with open(f, 'r') as j: data = json.load(j)
-                if isinstance(data, list): merged.update(data)
-            except: pass
-        if merged:
-            p = filedialog.asksaveasfilename(initialdir=USER_HOME, defaultextension=".json")
-            if p:
-                with open(p, 'w') as f: json.dump(list(merged), f, indent=4)
+        try:
+            files = filedialog.askopenfilenames(parent=self.root, initialdir=USER_HOME, title="Select Presets", filetypes=[("JSON", "*.json")])
+            if not files: return
+            merged = set()
+            for f in files:
+                try:
+                    with open(f, 'r') as j: data = json.load(j)
+                    if isinstance(data, list): merged.update(data)
+                except: pass
+            if merged:
+                p = filedialog.asksaveasfilename(parent=self.root, defaultextension=".json", filetypes=[("JSON", "*.json")])
+                if p:
+                    with open(p, 'w') as f: json.dump(list(merged), f, indent=4)
+                    ModernAlert(self.root, "Success", f"Merged into ultimate preset with {len(merged)} apps.", "info")
+        except Exception as e: ModernAlert(self.root, "Error", str(e), "error")
 
     def abort_uninstall(self):
         self.is_cancelled = True
@@ -405,7 +468,6 @@ class LinuxSweep:
             try: os.killpg(os.getpgid(self.current_proc.pid), signal.SIGTERM)
             except: pass
 
-    # Refined Check Queue for Dictionary Payloads
     def check_queue(self):
         try:
             while True:
@@ -422,13 +484,17 @@ class LinuxSweep:
         self.root.after(100, self.check_queue)
 
     def show_confirm(self):
-        sel = [uid for uid, v in self.selection_vars.items() if v.get()]
-        if sel: CustomConfirm(self.root, len(sel), lambda: self.start_uninstall(sel))
+        try:
+            sel = [uid for uid, v in self.selection_vars.items() if v.get()]
+            if sel: ModernAlert(self.root, "Confirm", f"Uninstall {len(sel)} items?", "ask", lambda: self.start_uninstall(sel))
+        except: pass
 
     def start_uninstall(self, uids):
-        self.is_cancelled = False
-        self.lw = LogWindow(self.root, self.abort_uninstall)
-        threading.Thread(target=self.worker_thread, args=(uids,), daemon=True).start()
+        try:
+            self.is_cancelled = False
+            self.lw = LogWindow(self.root, self.abort_uninstall)
+            threading.Thread(target=self.worker_thread, args=(uids,), daemon=True).start()
+        except Exception as e: ModernAlert(self.root, "Error", str(e), "error")
 
     def worker_thread(self, uids):
         total_apps = len(uids)
@@ -444,22 +510,13 @@ class LinuxSweep:
             current_app += 1
 
             self.log_queue.put({"type": "progress", "current": current_app, "total": total_apps, "name": app['name']})
-            self.log_queue.put({"type": "log", "msg": f"\n\n========================================\n"})
-            self.log_queue.put({"type": "log", "msg": f"[{current_app}/{total_apps}] UNINSTALLING: {app['name']} ({app['id']})\n"})
-            self.log_queue.put({"type": "log", "msg": f"========================================\n"})
+            self.log_queue.put({"type": "log", "msg": f"\n\n========================================\n[{current_app}/{total_apps}] UNINSTALLING: {app['name']}\n========================================\n"})
 
             cmd = []
-            if app['pm'] == "FLATPAK":
-                cmd = ["flatpak", "uninstall", "-y", app['id']]
-            elif app['pm'] == "SNAP":
-                cmd = ["snap", "remove", "--purge", app['id']]
+            if app['pm'] == "FLATPAK": cmd = ["flatpak", "uninstall", "-y", app['id']]
+            elif app['pm'] == "SNAP": cmd = ["snap", "remove", "--purge", app['id']]
             else:
-                cmd_map = {
-                    "APT": ["apt-get", "purge", "-y", "--auto-remove"],
-                    "DNF": ["dnf", "remove", "-y", "--setopt=clean_requirements_on_remove=1"],
-                    "PACMAN": ["pacman", "-Rns", "--noconfirm"],
-                    "ZYPPER": ["zypper", "remove", "-y", "--clean-deps"]
-                }
+                cmd_map = {"APT": ["apt-get", "purge", "-y", "--auto-remove"], "DNF": ["dnf", "remove", "-y", "--setopt=clean_requirements_on_remove=1"], "PACMAN": ["pacman", "-Rns", "--noconfirm"], "ZYPPER": ["zypper", "remove", "-y", "--clean-deps"]}
                 cmd = cmd_map.get(self.pm_type, ["echo", "Unknown PM"]) + [app['id']]
 
             try:
@@ -475,19 +532,17 @@ class LinuxSweep:
                         self.save_to_history([app['id']])
                     else:
                         failed.append(f"{app['name']} ({app['id']})")
-                        self.log_queue.put({"type": "log", "msg": f"❌ FAILED with Exit Code: {self.current_proc.returncode}\n"})
+                        self.log_queue.put({"type": "log", "msg": f"❌ FAILED with code: {self.current_proc.returncode}\n"})
             except Exception as e:
                 failed.append(f"{app['name']} ({app['id']})")
                 self.log_queue.put({"type": "log", "msg": f"❌ ERROR: {str(e)}\n"})
-            finally:
-                self.current_proc = None
+            finally: self.current_proc = None
 
         self.log_queue.put({"type": "done", "failed": failed})
 
 def global_handler(etype, value, tb):
     err_msg = "".join(traceback.format_exception(etype, value, tb))
     print(err_msg)
-    messagebox.showerror("Unexpected Error", f"LinuxSweep encountered an error:\n\n{value}\n\nThe program will attempt to stay open.")
 
 if __name__ == "__main__":
     root = tk.Tk()
