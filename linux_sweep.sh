@@ -40,7 +40,6 @@ refresh_package_cache() {
 }
 
 # ----------- 4. GRANULAR DEPENDENCY CHECK -----------
-# No Pillow/Imaging requirements
 ensure_pkg() {
     local label=$1; local check_cmd=$2; local apt_pkg=$3; local dnf_pkg=$4; local pacman_pkg=$5; local zyp_pkg=$6
     if ! eval "$check_cmd" &>/dev/null; then
@@ -67,7 +66,6 @@ import os, sys, json, subprocess, tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import threading, queue, pwd, signal, traceback
 
-# Constants & Configuration
 PROTECTED = ["python3", "python", "pkexec", "tkinter", "niri", "snapd", "flatpak", "bash", "sudo"]
 COLOR_BG, COLOR_HOVER, COLOR_SELECTED = "#ffffff", "#f8f9fa", "#e7f3ff"
 COLOR_BORDER, COLOR_TEXT, COLOR_ACCENT = "#e0e0e0", "#333333", "#1976d2"
@@ -84,7 +82,6 @@ USER_HOME = get_user_home()
 HISTORY_DIR = os.path.join(USER_HOME, ".config", "linux_sweep")
 HISTORY_FILE = os.path.join(HISTORY_DIR, "uninstalled_history.json")
 
-# 1. UI COMPONENT: Custom Confirmation Dialog
 class CustomConfirm(tk.Toplevel):
     def __init__(self, parent, count, callback):
         super().__init__(parent)
@@ -103,7 +100,6 @@ class CustomConfirm(tk.Toplevel):
         tk.Button(btn_f, text="UNINSTALL", bg=COLOR_DANGER, command=self.confirm, **cfg).pack(side="left", padx=10)
     def confirm(self): self.destroy(); self.callback()
 
-# 2. UI COMPONENT: Log Window with Robust Scroll
 class LogWindow(tk.Toplevel):
     def __init__(self, parent, cancel_callback):
         super().__init__(parent)
@@ -113,21 +109,28 @@ class LogWindow(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self.on_attempt_close)
         self.cancel_callback = cancel_callback
         self.finished = False
-        self.label = tk.Label(self, text="Purging Applications...", font=("Arial", 12, "bold"), bg=COLOR_BG, fg=COLOR_TEXT, pady=20)
+
+        self.label = tk.Label(self, text="Preparing to Purge...", font=("Arial", 12, "bold"), bg=COLOR_BG, fg=COLOR_TEXT, pady=20)
         self.label.pack()
-        self.progress = ttk.Progressbar(self, mode='indeterminate', length=650)
-        self.progress.pack(pady=5, padx=30); self.progress.start(15)
+        
+        # New Determinate Progress Bar
+        self.progress = ttk.Progressbar(self, mode='determinate', length=650)
+        self.progress.pack(pady=5, padx=30)
+        self.last_total = 100 
+
         self.log_container = tk.Frame(self, bg=COLOR_BG, highlightthickness=1, highlightbackground=COLOR_BORDER)
         self.log_container.pack(fill="both", expand=True, padx=30, pady=20)
         self.text_area = tk.Text(self.log_container, bg="#fafafa", font=("Monospace", 9), relief="flat", padx=15, pady=15)
         self.scrollbar = ttk.Scrollbar(self.log_container, orient="vertical", command=self.text_area.yview)
         self.text_area.configure(yscrollcommand=self.scrollbar.set)
         self.text_area.pack(side="left", fill="both", expand=True); self.scrollbar.pack(side="right", fill="y")
+
         self.text_area.bind("<MouseWheel>", self._on_log_scroll)
         self.text_area.bind("<Button-4>", self._on_log_scroll)
         self.text_area.bind("<Button-5>", self._on_log_scroll)
+
         self.btn_frame = tk.Frame(self, bg=COLOR_BG, pady=20); self.btn_frame.pack(fill="x")
-        cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 25, "pady": 8}
+        cfg = {"font": ("Arial", 10, "bold"), "relief": "flat", "fg": "white", "padx": 25, "pady": 8, "cursor": "hand2"}
         self.cancel_btn = tk.Button(self.btn_frame, text="CANCEL", command=self.do_instant_cancel, bg=COLOR_DANGER, **cfg)
         self.cancel_btn.pack(side="left", padx=(180, 10))
         self.close_btn = tk.Button(self.btn_frame, text="CLOSE", command=self.destroy, state="disabled", bg="#cccccc", **cfg)
@@ -142,6 +145,13 @@ class LogWindow(tk.Toplevel):
         try: self.text_area.insert(tk.END, msg); self.text_area.see(tk.END)
         except tk.TclError: pass
 
+    def update_progress(self, current, total, name):
+        try:
+            self.last_total = total
+            self.progress.config(maximum=total, value=current)
+            self.label.config(text=f"Purging {current} of {total}: {name}...")
+        except tk.TclError: pass
+
     def do_instant_cancel(self):
         try:
             self.cancel_callback()
@@ -149,12 +159,22 @@ class LogWindow(tk.Toplevel):
             self.finalize(cancelled=True)
         except: pass
 
-    def finalize(self, cancelled=False):
+    def finalize(self, cancelled=False, failed_list=None):
         self.finished = True
         try:
-            self.progress.stop(); self.progress.config(mode='determinate', value=100)
-            status = "⚠ CANCELLED" if cancelled else "✔ DONE"
-            self.label.config(text=status, fg=COLOR_DANGER if cancelled else COLOR_IMPORT)
+            self.progress.config(value=self.last_total)
+            if cancelled:
+                status, fg_color = "⚠ PROCESS CANCELLED", COLOR_DANGER
+            elif failed_list:
+                status, fg_color = f"⚠ COMPLETED WITH {len(failed_list)} ERRORS", "#FF9800"
+                self.log("\n\n" + "="*40 + "\n")
+                self.log("⚠️ SUMMARY OF FAILED UNINSTALLS ⚠️\n")
+                self.log("="*40 + "\n")
+                for f in failed_list: self.log(f"- {f}\n")
+            else:
+                status, fg_color = "✔ DONE: System Swept Clean", COLOR_IMPORT
+                
+            self.label.config(text=status, fg=fg_color)
             self.cancel_btn.config(state="disabled", bg="#cccccc")
             self.close_btn.config(state="normal", bg=COLOR_EXPORT)
         except tk.TclError: pass
@@ -163,7 +183,6 @@ class LogWindow(tk.Toplevel):
         if self.finished: self.destroy()
         else: self.do_instant_cancel()
 
-# 3. UI COMPONENT: History Selector
 class HistorySelectionWindow(tk.Toplevel):
     def __init__(self, parent, history_list):
         super().__init__(parent)
@@ -196,12 +215,9 @@ class HistorySelectionWindow(tk.Toplevel):
         if not selected: return
         p = filedialog.asksaveasfilename(initialdir=USER_HOME, defaultextension=".json")
         if p:
-            try:
-                with open(p, 'w') as f: json.dump(selected, f, indent=4)
-                self.destroy()
-            except: pass
+            with open(p, 'w') as f: json.dump(selected, f, indent=4)
+            self.destroy()
 
-# 4. MAIN ENGINE: LinuxSweep
 class LinuxSweep:
     def __init__(self, root, pm_type):
         self.root = root
@@ -289,8 +305,8 @@ class LinuxSweep:
                 uid = f"{pkg_id}_{self.pm_type}"
                 if uid not in self.app_data_map: self.app_data_map[uid] = {"name": name or pkg_id, "id": pkg_id, "pm": self.pm_type}
             try:
-                fp = subprocess.check_output(["flatpak", "list", "--columns=name,application"], stderr=subprocess.DEVNULL).decode()
-                for line in fp.strip().split('\n'):
+                fp_raw = subprocess.check_output(["flatpak", "list", "--columns=name,application"], stderr=subprocess.DEVNULL).decode()
+                for line in fp_raw.strip().split('\n'):
                     p = line.split('\t')
                     if len(p) >= 2: self.app_data_map[f"{p[1]}_FLATPAK"] = {"name": p[0], "id": p[1], "pm": "FLATPAK"}
             except: pass
@@ -309,7 +325,6 @@ class LinuxSweep:
         q = self.search_var.get().lower()
         for uid in sorted(self.app_data_map.keys(), key=lambda k: self.app_data_map[k]['name'].lower()):
             app = self.app_data_map[uid]
-            # Search matches BOTH App Name and Package ID
             if q in app['name'].lower() or q in app['id'].lower():
                 is_p = any(p in app['id'].lower() for p in PROTECTED)
                 row = tk.Frame(self.list_inner, bg=COLOR_BG, highlightthickness=1, highlightbackground=COLOR_BORDER, padx=12)
@@ -390,15 +405,19 @@ class LinuxSweep:
             try: os.killpg(os.getpgid(self.current_proc.pid), signal.SIGTERM)
             except: pass
 
+    # Refined Check Queue for Dictionary Payloads
     def check_queue(self):
         try:
             while True:
                 msg = self.log_queue.get_nowait()
-                if msg == "DONE":
-                    if self.lw: self.lw.finalize(cancelled=self.is_cancelled)
-                    self.refresh_app_list()
-                else:
-                    if self.lw: self.lw.log(msg)
+                if isinstance(msg, dict):
+                    if msg["type"] == "done":
+                        if self.lw: self.lw.finalize(cancelled=self.is_cancelled, failed_list=msg.get("failed", []))
+                        self.refresh_app_list()
+                    elif msg["type"] == "progress":
+                        if self.lw: self.lw.update_progress(msg["current"], msg["total"], msg["name"])
+                    elif msg["type"] == "log":
+                        if self.lw: self.lw.log(msg["msg"])
         except queue.Empty: pass
         self.root.after(100, self.check_queue)
 
@@ -412,39 +431,59 @@ class LinuxSweep:
         threading.Thread(target=self.worker_thread, args=(uids,), daemon=True).start()
 
     def worker_thread(self, uids):
-        native, flatpak, snap, successful = [], [], [], []
-        for uid in uids:
-            if uid not in self.app_data_map: continue
-            app = self.app_data_map[uid]
-            if app['pm'] == "FLATPAK": flatpak.append(app['id'])
-            elif app['pm'] == "SNAP": snap.append(app['id'])
-            else: native.append(app['id'])
+        total_apps = len(uids)
+        current_app = 0
+        successful = []
+        failed = []
 
-        def run_proc(cmd, ids):
-            if self.is_cancelled: return
+        for uid in uids:
+            if self.is_cancelled: break
+            if uid not in self.app_data_map: continue
+            
+            app = self.app_data_map[uid]
+            current_app += 1
+
+            self.log_queue.put({"type": "progress", "current": current_app, "total": total_apps, "name": app['name']})
+            self.log_queue.put({"type": "log", "msg": f"\n\n========================================\n"})
+            self.log_queue.put({"type": "log", "msg": f"[{current_app}/{total_apps}] UNINSTALLING: {app['name']} ({app['id']})\n"})
+            self.log_queue.put({"type": "log", "msg": f"========================================\n"})
+
+            cmd = []
+            if app['pm'] == "FLATPAK":
+                cmd = ["flatpak", "uninstall", "-y", app['id']]
+            elif app['pm'] == "SNAP":
+                cmd = ["snap", "remove", "--purge", app['id']]
+            else:
+                cmd_map = {
+                    "APT": ["apt-get", "purge", "-y", "--auto-remove"],
+                    "DNF": ["dnf", "remove", "-y", "--setopt=clean_requirements_on_remove=1"],
+                    "PACMAN": ["pacman", "-Rns", "--noconfirm"],
+                    "ZYPPER": ["zypper", "remove", "-y", "--clean-deps"]
+                }
+                cmd = cmd_map.get(self.pm_type, ["echo", "Unknown PM"]) + [app['id']]
+
             try:
                 self.current_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, preexec_fn=os.setsid)
                 for l in self.current_proc.stdout:
                     if self.is_cancelled: break
-                    self.log_queue.put(l)
+                    self.log_queue.put({"type": "log", "msg": l})
                 self.current_proc.wait()
-                if not self.is_cancelled and self.current_proc.returncode == 0:
-                    successful.extend(ids)
-                    self.save_to_history(ids)
-            except Exception as e: self.log_queue.put(f"Error: {str(e)}\n")
-            finally: self.current_proc = None
+                
+                if not self.is_cancelled:
+                    if self.current_proc.returncode == 0:
+                        successful.append(app['id'])
+                        self.save_to_history([app['id']])
+                    else:
+                        failed.append(f"{app['name']} ({app['id']})")
+                        self.log_queue.put({"type": "log", "msg": f"❌ FAILED with Exit Code: {self.current_proc.returncode}\n"})
+            except Exception as e:
+                failed.append(f"{app['name']} ({app['id']})")
+                self.log_queue.put({"type": "log", "msg": f"❌ ERROR: {str(e)}\n"})
+            finally:
+                self.current_proc = None
 
-        if native:
-            cmd_map = {"APT":["apt-get","purge","-y","--auto-remove"], "DNF":["dnf","remove","-y","--setopt=clean_requirements_on_remove=1"], "PACMAN":["pacman","-Rns","--noconfirm"], "ZYPPER":["zypper","remove","-y","--clean-deps"]}
-            run_proc(cmd_map.get(self.pm_type, ["echo", "Unknown PM"]) + native, native)
-        if flatpak and not self.is_cancelled: run_proc(["flatpak", "uninstall", "-y"] + flatpak, flatpak)
-        if snap and not self.is_cancelled:
-            for s in snap:
-                if self.is_cancelled: break
-                run_proc(["snap", "remove", "--purge", s], [s])
-        self.log_queue.put("DONE")
+        self.log_queue.put({"type": "done", "failed": failed})
 
-# Global Robust Exception Handler
 def global_handler(etype, value, tb):
     err_msg = "".join(traceback.format_exception(etype, value, tb))
     print(err_msg)
